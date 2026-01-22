@@ -1,0 +1,19 @@
+# 企業 AI 數據分析助理 v2.0 - 依賴套件
+
+# 核心框架
+streamlit>=1.28.0
+
+# 資料處理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 圖表
+plotly>=5.15.0
+
+# AI（Gemini）
+google-generativeai>=0.3.0
+
+# 檔案處理
+openpyxl>=3.1.0  # Excel
+pyarrow>=14.0.0  # Parquet
+xlrd>=2.0.0      # 舊版 Excel
