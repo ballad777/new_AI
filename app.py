@@ -1,1381 +1,1324 @@
-# app.py
-# -*- coding: utf-8 -*-
+"""
+🤖 企業級 AI 智能數據分析系統 v16.1
+================================================================
+三引擎架構: 數據清洗 · 語意感知 · 邏輯大腦
+v16.1 微調修復:
+  ✅ 跨年份比較圖表修復（月份軸 + 年份分色）
+  ✅ 側邊欄 UI 強化（展開狀態 + 按鈕優化）
+  
+繼承 v15.0 核心:
+  ✅ ASP 正確公式: 未稅淨額/淨數量（禁用含稅）
+  ✅ 優先使用「含正負號」欄位（系統原生淨額）
+  ✅ 銷退自動轉負 + 禁止重複扣除
+  ✅ 查無資料回報機制
+  ✅ 圖表強制觸發（One-Shot Charting）
+  ✅ 語意欄位偵測（單別≠品名）
+================================================================
+"""
 
-from __future__ import annotations
-
-import io
-import re
-import json
-from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, Tuple
-
-import numpy as np
-import pandas as pd
 import streamlit as st
-
+import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 from openai import OpenAI
-from openai import RateLimitError
+import json
+import re
+from typing import Dict, List, Optional, Tuple, Any
+import numpy as np
+import io
+import traceback
 
+# ============================================================================
+# 全域配置
+# ============================================================================
+PASSWORD = "0413"
+EMBEDDED_API_KEY = st.secrets["OPENAI_API_KEY"]
+PAGE_TITLE = "🤖 AI 智能數據分析師"
+PAGE_ICON = "🤖"
+GPT_MODEL = "gpt-4o"
+MAX_RETRIES = 3
+TEMPERATURE = 0.01
 
-# =========================
-# Config
-# =========================
-st.set_page_config(page_title="AI 資料分析助理", layout="wide")
+COLOR_PALETTE = {
+    'default': ['#FF6B35', '#004E89', '#2ECC71', '#9B59B6', '#F39C12',
+                '#1ABC9C', '#E74C3C', '#3498DB', '#E91E63', '#00BCD4'],
+    'blue': ['#004E89', '#0066B3', '#3498DB', '#5DADE2', '#85C1E9', '#AED6F1'],
+    'red': ['#E74C3C', '#C0392B', '#F1948A', '#EC7063', '#CD6155', '#F5B7B1'],
+    'green': ['#2ECC71', '#27AE60', '#58D68D', '#82E0AA', '#ABEBC6', '#D5F5E3'],
+    'orange': ['#FF6B35', '#E67E22', '#F39C12', '#F8C471', '#FAD7A0', '#FDEBD0'],
+    'purple': ['#9B59B6', '#8E44AD', '#BB8FCE', '#D2B4DE', '#E8DAEF', '#F4ECF7'],
+    'rainbow': ['#E74C3C', '#E67E22', '#F1C40F', '#2ECC71', '#3498DB', '#9B59B6', '#1ABC9C'],
+    'pastel': ['#FFB3BA', '#FFDFBA', '#FFFFBA', '#BAFFC9', '#BAE1FF', '#E0BBE4'],
+    'dark': ['#2C3E50', '#34495E', '#7F8C8D', '#95A5A6', '#BDC3C7'],
+    'warm': ['#E74C3C', '#E67E22', '#F39C12', '#D35400', '#C0392B'],
+    'cool': ['#3498DB', '#2980B9', '#1ABC9C', '#16A085', '#2ECC71', '#00BCD4'],
+}
 
-APP_TITLE = "AI 資料分析助理（GPT 風格｜上下文記憶版）"
-DEFAULT_MODEL = "gpt-4.1-mini"
-TOPK_TABLES = 8
-HEAD_ROWS = 12
-HEAD_COLS = 50
-CONTEXT_TURNS = 8  # planner uses last N turns
-TOPN_DEFAULT = 10
+COLOR_NAME_MAP = {
+    '藍': 'blue', '藍色': 'blue', 'blue': 'blue',
+    '紅': 'red', '紅色': 'red', 'red': 'red',
+    '綠': 'green', '綠色': 'green', 'green': 'green',
+    '橙': 'orange', '橙色': 'orange', 'orange': 'orange', '橘': 'orange', '橘色': 'orange',
+    '紫': 'purple', '紫色': 'purple', 'purple': 'purple',
+    '黃': 'orange', '黃色': 'orange',
+    '彩虹': 'rainbow', '多彩': 'rainbow', 'rainbow': 'rainbow',
+    '柔和': 'pastel', '粉彩': 'pastel', 'pastel': 'pastel',
+    '深色': 'dark', '暗色': 'dark', 'dark': 'dark',
+    '暖色': 'warm', 'warm': 'warm',
+    '冷色': 'cool', 'cool': 'cool',
+}
 
+CHART_TYPE_MAP = {
+    '長條圖': 'bar', '柱狀圖': 'bar', '直條圖': 'bar', 'bar': 'bar',
+    '分組長條圖': 'grouped_bar', '分組': 'grouped_bar', '並排': 'grouped_bar',
+    'grouped_bar': 'grouped_bar',
+    '堆疊長條圖': 'stacked_bar', '堆疊': 'stacked_bar', 'stacked_bar': 'stacked_bar',
+    '折線圖': 'line', '線圖': 'line', '趨勢圖': 'line', 'line': 'line',
+    '面積圖': 'area', 'area': 'area',
+    '堆疊面積圖': 'stacked_area', 'stacked_area': 'stacked_area',
+    '圓餅圖': 'pie', '餅圖': 'pie', 'pie': 'pie',
+    '環形圖': 'donut', '甜甜圈': 'donut', 'donut': 'donut',
+    '散點圖': 'scatter', 'scatter': 'scatter',
+    '水平長條圖': 'horizontal_bar', '水平': 'horizontal_bar', '橫條圖': 'horizontal_bar',
+    'horizontal_bar': 'horizontal_bar',
+    '瀑布圖': 'waterfall', 'waterfall': 'waterfall',
+    '漏斗圖': 'funnel', 'funnel': 'funnel',
+    '雷達圖': 'radar', 'radar': 'radar',
+    '熱力圖': 'heatmap', 'heatmap': 'heatmap',
+    '樹狀圖': 'treemap', 'treemap': 'treemap',
+    '旭日圖': 'sunburst', 'sunburst': 'sunburst',
+}
 
-# =========================
-# Custom CSS - Pure White Theme with Dark/Light Mode Support
-# =========================
 CUSTOM_CSS = """
 <style>
-    /* Light Mode (Default) */
-    :root {
-        --bg-primary: #ffffff;
-        --bg-secondary: #f8f9fa;
-        --bg-tertiary: #f1f3f4;
-        --text-primary: #1a1a1a;
-        --text-secondary: #4a4a4a;
-        --text-muted: #6b7280;
-        --border-color: #e5e7eb;
-        --accent-color: #2563eb;
-        --accent-hover: #1d4ed8;
+    .main-header {
+        background: linear-gradient(135deg, #FF6B35 0%, #004E89 50%, #2ECC71 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2.8rem; font-weight: 800; text-align: center; margin-bottom: 0.5rem;
     }
-    
-    /* Dark Mode */
-    @media (prefers-color-scheme: dark) {
-        :root {
-            --bg-primary: #1a1a1a;
-            --bg-secondary: #242424;
-            --bg-tertiary: #2d2d2d;
-            --text-primary: #f5f5f5;
-            --text-secondary: #d4d4d4;
-            --text-muted: #9ca3af;
-            --border-color: #404040;
-            --accent-color: #3b82f6;
-            --accent-hover: #60a5fa;
-        }
+    .sub-header { text-align: center; color: #666; font-size: 1.05rem; margin-bottom: 2rem; }
+    .data-header {
+        background: linear-gradient(90deg, #FF6B35 0%, #FF8F6B 100%);
+        color: white; padding: 0.8rem 1.2rem; border-radius: 10px 10px 0 0;
+        font-weight: 700; font-size: 1.05rem;
     }
-    
-    .stApp {
-        background-color: var(--bg-primary) !important;
+    .thinking-box {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        border-left: 5px solid #3498DB; border-radius: 0 10px 10px 0;
+        padding: 1.2rem 1.5rem; margin: 1rem 0; font-size: 0.95rem;
+        color: #2C3E50; line-height: 1.6;
     }
-    
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-        background-color: var(--bg-primary);
+    .engine-report {
+        background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+        border-left: 5px solid #16a34a; border-radius: 0 10px 10px 0;
+        padding: 1rem 1.2rem; margin: 0.5rem 0; font-size: 0.88rem; line-height: 1.7;
     }
-    
-    section[data-testid="stSidebar"] {
-        background-color: var(--bg-primary) !important;
-        border-right: 1px solid var(--border-color);
+    .sheet-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white; padding: 0.3rem 0.8rem; border-radius: 15px;
+        font-size: 0.85rem; margin: 0.2rem; font-weight: 600;
     }
-    
-    section[data-testid="stSidebar"] > div {
-        background-color: var(--bg-primary) !important;
+    #MainMenu {visibility: hidden;} 
+    footer {visibility: hidden;}
+    /* 保留 Streamlit 的 header 以顯示側邊欄展開按鈕 */
+    header[data-testid="stHeader"] {
+        background-color: transparent;
     }
-    
-    section[data-testid="stSidebar"] .stMarkdown,
-    section[data-testid="stSidebar"] .stMarkdown p,
-    section[data-testid="stSidebar"] label,
-    section[data-testid="stSidebar"] span {
-        color: var(--text-primary) !important;
+    /* 確保側邊欄控制按鈕可見 */
+    button[kind="header"] {
+        visibility: visible !important;
     }
-    
-    h1, h2, h3, h4, h5, h6, p, span, div, label {
-        color: var(--text-primary);
+    [data-testid="collapsedControl"] {
+        visibility: visible !important;
+        display: block !important;
     }
-    
-    .stMarkdown, .stMarkdown p {
-        color: var(--text-primary) !important;
-    }
-    
-    .stChatMessage {
-        background-color: var(--bg-secondary) !important;
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-    }
-    
     .stButton > button {
-        background-color: var(--bg-secondary) !important;
-        color: var(--text-primary) !important;
-        border: 1px solid var(--border-color) !important;
-        border-radius: 8px;
+        border-radius: 10px; font-weight: 600; transition: all 0.3s ease;
     }
-    
     .stButton > button:hover {
-        background-color: var(--bg-tertiary) !important;
-        border-color: var(--accent-color) !important;
+        transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,0,0,0.15);
     }
-    
-    .stTextInput input {
-        background-color: var(--bg-primary) !important;
-        color: var(--text-primary) !important;
-        border: 1px solid var(--border-color) !important;
+    /* 側邊欄按鈕統一尺寸 */
+    [data-testid="stSidebar"] .stButton > button {
+        min-height: 38px;
+        padding: 0.4rem 0.5rem;
+        font-size: 0.85rem;
     }
-    
-    [data-testid="stFileUploader"] {
-        background-color: var(--bg-secondary) !important;
-        border: 2px dashed var(--border-color) !important;
-        border-radius: 12px;
+    /* 強化側邊欄展開按鈕的可見度 */
+    [data-testid="collapsedControl"] {
+        background: linear-gradient(135deg, #FF6B35 0%, #004E89 100%) !important;
+        color: white !important;
+        border-radius: 0 8px 8px 0 !important;
+        padding: 12px 6px !important;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.3) !important;
+        transition: all 0.3s ease !important;
     }
-    
-    .stDataFrame {
-        border-radius: 8px;
-        border: 1px solid var(--border-color);
+    [data-testid="collapsedControl"]:hover {
+        transform: translateX(3px) !important;
+        box-shadow: 3px 3px 15px rgba(0,0,0,0.4) !important;
     }
-    
-    .stSuccess {
-        background-color: rgba(16, 185, 129, 0.1) !important;
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        border-radius: 8px;
-    }
-    
-    .stInfo {
-        background-color: rgba(59, 130, 246, 0.1) !important;
-        border: 1px solid rgba(59, 130, 246, 0.3);
-        border-radius: 8px;
-    }
-    
-    hr {
-        border-color: var(--border-color) !important;
-    }
-    
-    .js-plotly-plot {
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
+    [data-testid="collapsedControl"] svg {
+        width: 24px !important;
+        height: 24px !important;
+        color: white !important;
     }
 </style>
 """
 
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+# ============================================================================
+# 安全工具
+# ============================================================================
+def safe_get_string(value, default=''):
+    if value is None: return default
+    if isinstance(value, str): return value
+    if isinstance(value, (list, tuple)): return str(value[0]) if value else default
+    return str(value)
 
-
-# =========================
-# Helpers
-# =========================
-def normalize(s: str) -> str:
-    s = str(s or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
-def safe_json_extract(text: str) -> Optional[dict]:
-    text = (text or "").strip()
-    if not text:
-        return None
+def format_number(x):
     try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            return obj
+        if pd.isna(x): return ''
+        if isinstance(x, (int, float, np.integer, np.floating)):
+            return f"{x:,.0f}" if abs(x) >= 1 else f"{x:.2f}"
+        return str(x)
     except Exception:
-        pass
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(0))
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        return None
-    return None
+        return str(x)
 
 
-def to_datetime_series(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce")
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  ENGINE 1: 數據清洗引擎                                      ║
+# ╚══════════════════════════════════════════════════════════════╝
+class DataCleaningEngine:
+    SUMMARY_KW = ['總表', '彙總', 'summary', 'total', '合計', '統計']
+    DETAIL_KW = ['明細', '交易', 'detail', 'raw', 'transaction', '銷貨', '進貨', '出貨']
+    RETURN_KW = ['銷退', '退貨', '退回', 'return', 'credit', '折讓', 'refund', '銷折']
+    TYPE_KW = ['單別', '單據類型', 'type', '單別名稱']
+    NUMERIC_KW = ['數量', '金額', 'qty', 'amt', '未稅', '含稅', '稅額', '單價',
+                  'price', 'amount', 'total', 'cost', '成本', '營收', 'revenue',
+                  '毛利', 'profit', '淨額', '庫存', 'quantity', '費用']
+    ID_KW = ['id', '編號', '序號', 'no', 'code', '代號', 'sku', '單號',
+             'number', '電話', '流水號']
+    DATE_KW = ['日期', 'date', '時間']
+    SKIP_SHEET_KW = ['index', 'readme', '說明', 'template']
+    SAFE_DEDUP_COLS = ['唯一流水號(子檔)', '序號', '流水號']
 
+    def __init__(self):
+        self.log = []
+        self.stats = {}
+        self._reset()
 
-def detect_compare_intent(q: str) -> bool:
-    qn = normalize(q)
-    keywords = ["比較", "對比", "vs", "v.s", "yoy", "年增", "年增率", "年成長", "同期"]
-    if any(k in qn for k in keywords):
-        return True
-    years = re.findall(r"(20\d{2})", qn)
-    return len(set(years)) >= 2
+    def _reset(self):
+        self.log = []
+        self.stats = dict(total_files=0, total_sheets_read=0,
+                          sheets_skipped_summary=0, sheets_skipped_other=0,
+                          rows_before_dedup=0, rows_after_dedup=0,
+                          duplicates_removed=0, dedup_strategy='',
+                          return_rows_negated=0, return_type_col='',
+                          numeric_cols_standardized=0, date_cols_processed=0)
 
+    def _m(self, text, keywords):
+        t = text.strip().lower()
+        return any(k in t for k in keywords)
 
-def detect_viz_followup_intent(q: str) -> Optional[str]:
-    """
-    Follow-up intent like:
-    - 改成圖表 / 畫圖 / 做成圖
-    - 換成折線 / 換成長條 / 柱狀
-    - 只畫成長率
-    """
-    qn = normalize(q)
+    # ── 主流程 ──
+    def clean(self, files, selected_sheets=None):
+        self._reset()
+        frames = []
+        meta = dict(files=[], sheets=[], total_rows=0, columns=[],
+                    numeric_columns=[], date_columns=[], categorical_columns=[],
+                    years=[], sample_data={}, unique_values={},
+                    load_errors=[], data_summary={})
 
-    # explicit chart change
-    if any(k in qn for k in ["改成圖表", "畫成圖", "改成圖", "做成圖", "圖表", "plot", "chart"]):
-        if any(k in qn for k in ["折線", "line"]):
-            return "line"
-        if any(k in qn for k in ["長條", "柱狀", "bar"]):
-            return "bar"
-        if any(k in qn for k in ["只畫成長率", "只要成長率", "成長率線", "yoy線"]):
-            return "yoy_only"
-        return "auto"
-
-    # implicit chart hints
-    if any(k in qn for k in ["折線", "line"]):
-        return "line"
-    if any(k in qn for k in ["長條", "柱狀", "bar"]):
-        return "bar"
-    if any(k in qn for k in ["只畫成長率", "只要成長率"]):
-        return "yoy_only"
-
-    return None
-
-
-def pretty_md(sections: Dict[str, Any]) -> str:
-    title = sections.get("title") or "分析結果"
-    bullets = sections.get("bullets") or []
-    obs = sections.get("observations") or []
-    sug = sections.get("suggestions") or []
-    notes = sections.get("notes") or []
-
-    lines = [f"## {title}\n"]
-    if bullets:
-        lines.append("### 摘要")
-        for b in bullets:
-            lines.append(f"- **{b}**")
-        lines.append("")
-    if obs:
-        lines.append("### 觀察")
-        for i, o in enumerate(obs, 1):
-            lines.append(f"{i}. {o}")
-        lines.append("")
-    if sug:
-        lines.append("### 建議")
-        for s in sug:
-            lines.append(f"- {s}")
-        lines.append("")
-    if notes:
-        lines.append("### 備註")
-        for n in notes:
-            lines.append(f"- {n}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-def df_safe_preview(df: pd.DataFrame, n: int = 30) -> pd.DataFrame:
-    out = df.head(n).copy()
-    for c in out.columns:
-        if pd.api.types.is_datetime64_any_dtype(out[c]):
-            out[c] = out[c].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return out
-
-
-# =========================
-# Data ingestion
-# =========================
-@dataclass
-class TableProfile:
-    key: str
-    rows: int
-    cols: int
-    columns: List[str]
-    dtypes: Dict[str, str]
-    sample_head: List[Dict[str, Any]]
-
-
-def head_profile(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    head = df.head(HEAD_ROWS)
-    if head.shape[1] > HEAD_COLS:
-        head = head.iloc[:, :HEAD_COLS]
-    return head.fillna("").astype(str).to_dict(orient="records")
-
-
-def read_excel_all_sheets(uploaded_file) -> Dict[str, pd.DataFrame]:
-    data = uploaded_file.read()
-    bio = io.BytesIO(data)
-    xls = pd.ExcelFile(bio)
-    out: Dict[str, pd.DataFrame] = {}
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(bio, sheet_name=sheet)
-        bio.seek(0)
-        out[f"{uploaded_file.name} | {sheet}"] = df
-    return out
-
-
-def light_datetime_parse(df: pd.DataFrame) -> pd.DataFrame:
-    df2 = df.copy()
-    for c in df2.columns:
-        name = str(c)
-        if any(k in name for k in ["日期", "時間", "date", "time", "年月", "月份"]):
+        for f in files:
+            self.stats['total_files'] += 1
             try:
-                df2[c] = pd.to_datetime(df2[c], errors="coerce")
-            except Exception:
-                pass
-    return df2
+                fb = f.read(); f.seek(0)
+                xls = pd.ExcelFile(io.BytesIO(fb))
+                fname = f.name
+                to_load = self._resolve_sheets(xls.sheet_names, fname, selected_sheets)
+                for sn in to_load:
+                    df_s = self._load_sheet(xls, sn, fname)
+                    if df_s is not None and len(df_s) > 0:
+                        frames.append(df_s)
+                        meta['sheets'].append(dict(file=fname, sheet=sn, rows=len(df_s),
+                                                   columns=[c for c in df_s.columns if not str(c).startswith('_')]))
+                        self.stats['total_sheets_read'] += 1
+                        self.log.append(f"✅ [{fname}] → '{sn}' ({len(df_s):,} 行)")
+                meta['files'].append(fname)
+            except Exception as e:
+                meta['load_errors'].append(f"{f.name}: {e}")
+                self.log.append(f"❌ {f.name}: {e}")
 
+        if not frames:
+            return None, meta, self.stats
 
-def build_profile(key: str, df: pd.DataFrame) -> TableProfile:
-    return TableProfile(
-        key=key,
-        rows=int(df.shape[0]),
-        cols=int(df.shape[1]),
-        columns=[str(c) for c in df.columns.tolist()],
-        dtypes={str(c): str(df[c].dtype) for c in df.columns},
-        sample_head=head_profile(df),
-    )
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        self.stats['rows_before_dedup'] = len(combined)
 
+        combined = self._safe_dedup(combined)
+        combined = self._standardize_numeric(combined)
+        combined = self._negate_returns(combined)
+        combined = self._convert_dates(combined)
+        self._finalize_meta(combined, meta)
+        self.log.append(f"🎯 清洗完畢: {len(combined):,} 行 × {len(combined.columns)} 欄")
+        return combined, meta, self.stats
 
-def score_table(question: str, profile: TableProfile) -> float:
-    q = normalize(question)
-    meta = normalize(profile.key + " " + " ".join(profile.columns))
+    def _resolve_sheets(self, names, fname, selected):
+        if selected and fname in selected:
+            return selected[fname]
+        valid = [s for s in names if not self._m(s, self.SKIP_SHEET_KW)]
+        if not valid:
+            valid = names
+        has_sum = any(self._m(s, self.SUMMARY_KW) for s in valid)
+        has_det = any(self._m(s, self.DETAIL_KW) for s in valid)
+        if has_sum and has_det:
+            kept = []
+            for s in valid:
+                if self._m(s, self.SUMMARY_KW):
+                    self.stats['sheets_skipped_summary'] += 1
+                    self.log.append(f"🚫 智慧路由丟棄總表: [{fname}] → '{s}'")
+                else:
+                    kept.append(s)
+            return kept
+        return valid
 
-    def grams(s: str, n: int) -> set:
-        s = re.sub(r"[^\w\u4e00-\u9fff]+", "", s)
-        if len(s) <= n:
-            return {s} if s else set()
-        return {s[i:i + n] for i in range(len(s) - n + 1)}
-
-    qg = grams(q, 2) | grams(q, 3)
-    mg = grams(meta, 2) | grams(meta, 3)
-    if not qg or not mg:
-        return 0.0
-    base = len(qg & mg) / len(qg | mg)
-
-    boost = 0.0
-    kl = normalize(profile.key)
-    if any(k in q for k in ["銷售", "銷貨", "營收"]) and any(k in kl for k in ["sales", "銷"]):
-        boost += 0.10
-    if any(k in q for k in ["採購", "進貨", "進銷", "供應商"]) and any(k in kl for k in ["purchase", "進"]):
-        boost += 0.10
-    if detect_compare_intent(q):
-        boost += 0.05
-    return float(base + boost)
-
-
-def pick_tables(question: str, profiles: Dict[str, TableProfile], topk: int) -> List[str]:
-    scored = [(score_table(question, p), k) for k, p in profiles.items()]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    keys = [k for s, k in scored[:topk] if s > 0]
-    if not keys and scored:
-        keys = [scored[0][1]]
-    return keys
-
-
-def tables_context_json(keys: List[str], profiles: Dict[str, TableProfile]) -> str:
-    blocks = []
-    for k in keys:
-        p = profiles[k]
-        blocks.append({
-            "table_key": p.key,
-            "rows": p.rows,
-            "cols": p.cols,
-            "columns": p.columns,
-            "dtypes": p.dtypes,
-            "sample_head": p.sample_head,
-        })
-    return json.dumps(blocks, ensure_ascii=False, indent=2)
-
-
-# =========================
-# API Key Login
-# =========================
-def require_api_key() -> str:
-    if "openai_api_key" not in st.session_state:
-        st.session_state.openai_api_key = ""
-
-    if st.session_state.openai_api_key:
-        return st.session_state.openai_api_key
-
-    st.title(APP_TITLE)
-    st.caption("輸入你的 OpenAI API Key 才能使用（只存在此瀏覽器 Session）。")
-
-    api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx")
-    if st.button("✅ 開始使用", use_container_width=True):
-        if not api_key or not api_key.startswith("sk-"):
-            st.error("API Key 格式不正確（通常以 sk- 開頭）。")
-            st.stop()
+    def _load_sheet(self, xls, sheet, fname):
         try:
-            client = OpenAI(api_key=api_key)
-            _ = client.models.list()
-        except RateLimitError:
-            st.error("API Key 可用，但目前額度不足/未開通 Billing（429）。請先儲值後再試。")
-            st.stop()
+            raw = pd.read_excel(xls, sheet_name=sheet, header=None, nrows=15)
+            if raw.empty: return None
+            hr = self._detect_header(raw)
+            df = pd.read_excel(xls, sheet_name=sheet, header=hr)
+            df.columns = [str(c).strip() for c in df.columns]
+            df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
+            df.dropna(how='all', inplace=True)
+            if len(df) == 0: return None
+            df['_來源檔案'] = fname
+            df['_工作表'] = sheet
+            return df
         except Exception:
-            st.error("API Key 驗證失敗：請確認 Key 有效、已啟用 Billing 且有可用額度。")
-            st.stop()
+            return None
 
-        st.session_state.openai_api_key = api_key
-        st.rerun()
+    def _detect_header(self, raw):
+        for i in range(min(10, len(raw))):
+            row = raw.iloc[i]
+            v = sum(1 for val in row if pd.notna(val) and isinstance(val, str)
+                    and len(str(val).strip()) > 0
+                    and not str(val).strip().replace('.','').replace('-','').replace('/','').isdigit())
+            if v >= max(3, len(row) * 0.3):
+                return i
+        return 0
 
-    st.stop()
+    def _safe_dedup(self, df):
+        for sc in self.SAFE_DEDUP_COLS:
+            if sc in df.columns:
+                b = len(df)
+                df = df.drop_duplicates(subset=[sc], keep='first').reset_index(drop=True)
+                r = b - len(df)
+                self.stats.update(rows_after_dedup=len(df), duplicates_removed=r,
+                                  dedup_strategy=f"基於: {sc}")
+                if r > 0: self.log.append(f"🗑️ 安全去重({sc}): -{r:,}")
+                return df
 
-
-# =========================
-# LLM planner with CONTEXT MEMORY
-# =========================
-SCHEMA_SYSTEM = """你是資料分析規劃器。你只做一件事：從使用者問題、對話上下文、以及資料表欄位中，選出正確的表與欄位，並回傳結構化 JSON。
-你不寫 Python 程式碼。
-
-你必須理解繁體中文語意，並且要能接續上下文：
-- 如果使用者說「改成圖表 / 換成折線 / 把剛剛那個改成...」，你要知道他指的是上一輪的分析結果。
-- 如果上一輪已經選定 table_key/欄位/年份，除非使用者明確改需求，否則沿用。
-
-輸出格式：只輸出 JSON。
-JSON schema:
-{
-  "table_key": "要用的 table_key（若是跟上次同一個分析就沿用）",
-  "task_type": "trend_monthly | compare_yoy_monthly | topn | generic_summary",
-  "date_col": "日期欄(可為空字串)",
-  "year_col": "年欄(可為空字串)",
-  "month_col": "月欄(可為空字串)",
-  "filters": [{"col":"欄位","op":"==|!=|contains|in","value":"值或list"}],
-  "metrics": {"quantity_col": "數量欄(可空)", "amount_col": "金額欄(可空)"},
-  "dimensions": {"product_col": "產品欄(可空)", "salesperson_col": "業務員欄(可空)", "vendor_col": "供應商欄(可空)"},
-  "years": [2023, 2024],
-  "topn": 10,
-  "notes": "如果欄位不確定，說明你需要哪個欄位/為什麼"
-}
-
-重要規則：
-- 只要使用者有比較/對比/VS/年增，task_type 一律用 compare_yoy_monthly
-- compare_yoy_monthly：同月份對齊 01~12，比較兩年同月的數量或金額（不要把兩年接在一條時間軸）
-"""
-
-
-def build_chat_context_for_planner(messages: List[dict], last_state: dict) -> str:
-    recent = messages[-CONTEXT_TURNS:] if messages else []
-    lines = ["【最近對話】"]
-    for m in recent:
-        role = m.get("role", "")
-        content = (m.get("content") or "").strip()
-        content = re.sub(r"\n{3,}", "\n\n", content)
-        if len(content) > 600:
-            content = content[:600] + "…"
-        lines.append(f"- {role}: {content}")
-
-    lines.append("\n【上一輪分析狀態】")
-    if last_state:
-        keep = {k: last_state.get(k) for k in [
-            "table_key", "task_type", "years", "metric_col", "metric_kind",
-            "filters", "dim_col", "last_table_name", "last_result_table_name"
-        ]}
-        lines.append(json.dumps(keep, ensure_ascii=False))
-    else:
-        lines.append("（無）")
-    return "\n".join(lines)
-
-
-def llm_plan(
-    client: OpenAI,
-    question: str,
-    tables_json: str,
-    model: str,
-    messages: List[dict],
-    last_state: dict
-) -> dict:
-    ctx = build_chat_context_for_planner(messages, last_state)
-    resp = client.responses.create(
-        model=model,
-        input=[
-            {"role": "system", "content": SCHEMA_SYSTEM},
-            {"role": "user", "content": f"{ctx}\n\n【本次使用者新問題】\n{question}\n\n【可用資料表資訊（JSON）】\n{tables_json}\n"},
-        ],
-    )
-
-    text = ""
-    for o in getattr(resp, "output", []) or []:
-        if getattr(o, "type", None) == "message":
-            for c in getattr(o, "content", []) or []:
-                if getattr(c, "type", None) == "output_text":
-                    text += (getattr(c, "text", "") or "")
-    obj = safe_json_extract(text)
-    return obj or {}
-
-
-# =========================
-# Deterministic analytics (stable)
-# =========================
-def apply_filters(df: pd.DataFrame, filters: List[dict]) -> pd.DataFrame:
-    out = df.copy()
-    for f in filters or []:
-        col = f.get("col", "")
-        op = f.get("op", "")
-        val = f.get("value", None)
-        if not col or col not in out.columns:
-            continue
-        s = out[col]
-        try:
-            if op == "==":
-                out = out[s == val]
-            elif op == "!=":
-                out = out[s != val]
-            elif op == "contains":
-                out = out[s.astype(str).str.contains(str(val), na=False)]
-            elif op == "in":
-                if isinstance(val, list):
-                    out = out[s.isin(val)]
-        except Exception:
-            continue
-    return out
-
-
-def ensure_year_month(df: pd.DataFrame, date_col: str, year_col: str, month_col: str) -> Tuple[pd.DataFrame, str, str]:
-    """
-    Return (df2, ycol, mcol) where ycol/mcol exist in df2.
-    """
-    out = df.copy()
-
-    if year_col and year_col in out.columns and month_col and month_col in out.columns:
-        out[year_col] = pd.to_numeric(out[year_col], errors="coerce")
-        out[month_col] = pd.to_numeric(out[month_col], errors="coerce")
-        return out, year_col, month_col
-
-    if date_col and date_col in out.columns:
-        dt = to_datetime_series(out[date_col])
-        out["_year_"] = dt.dt.year
-        out["_month_"] = dt.dt.month
-        return out, "_year_", "_month_"
-
-    # guess a datetime column
-    for c in out.columns:
-        if any(k in str(c) for k in ["日期", "date", "時間", "time"]):
-            dt = to_datetime_series(out[c])
-            if dt.notna().sum() > 0:
-                out["_year_"] = dt.dt.year
-                out["_month_"] = dt.dt.month
-                return out, "_year_", "_month_"
-
-    # nothing
-    out["_year_"] = np.nan
-    out["_month_"] = np.nan
-    return out, "_year_", "_month_"
-
-
-def choose_metric_col(df: pd.DataFrame, question: str, plan: dict) -> Tuple[str, str]:
-    """
-    return (metric_kind, metric_col)
-    metric_kind: "quantity" or "amount"
-    """
-    q = normalize(question)
-    want_amount = any(k in q for k in ["金額", "未稅", "含稅", "營收", "成本", "費用", "amount", "revenue"])
-    metrics = plan.get("metrics", {}) or {}
-
-    qcol = (metrics.get("quantity_col") or "").strip()
-    acol = (metrics.get("amount_col") or "").strip()
-
-    # explicit provided
-    if want_amount and acol and acol in df.columns:
-        return "amount", acol
-    if (not want_amount) and qcol and qcol in df.columns:
-        return "quantity", qcol
-
-    # if only one exists
-    if acol and acol in df.columns and not qcol:
-        return "amount", acol
-    if qcol and qcol in df.columns and not acol:
-        return "quantity", qcol
-
-    # guess by column names
-    # 1) amount
-    if want_amount:
-        for c in df.columns:
-            cn = str(c)
-            if any(k in cn for k in ["金額", "未稅", "含稅", "營收", "amount"]):
-                return "amount", c
-
-    # 2) quantity
-    for c in df.columns:
-        cn = str(c)
-        if any(k in cn for k in ["數量", "qty", "quantity", "件數"]):
-            return "quantity", c
-
-    # fallback numeric column
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if numeric_cols:
-        return ("amount" if want_amount else "quantity"), numeric_cols[0]
-
-    # worst fallback: first col
-    return ("amount" if want_amount else "quantity"), str(df.columns[0])
-
-
-def build_yoy_table(df: pd.DataFrame, question: str, plan: dict) -> Tuple[pd.DataFrame, dict]:
-    years = plan.get("years") or []
-    years = [int(y) for y in years if str(y).isdigit()]
-    years = sorted(list(dict.fromkeys(years)))
-
-    date_col = (plan.get("date_col") or "").strip()
-    year_col = (plan.get("year_col") or "").strip()
-    month_col = (plan.get("month_col") or "").strip()
-
-    d2, ycol, mcol = ensure_year_month(df, date_col, year_col, month_col)
-
-    metric_kind, metric_col = choose_metric_col(d2, question, plan)
-    if metric_col not in d2.columns:
-        metric_col = d2.columns[0]
-
-    d2 = d2.copy()
-    d2[ycol] = pd.to_numeric(d2[ycol], errors="coerce")
-    d2[mcol] = pd.to_numeric(d2[mcol], errors="coerce")
-    d2[metric_col] = pd.to_numeric(d2[metric_col], errors="coerce").fillna(0)
-
-    # determine years if missing
-    if len(years) < 2:
-        ys = d2[ycol].dropna()
-        if len(ys) > 0:
-            common = ys.astype(int).value_counts().index.tolist()
-            years = [int(x) for x in common[:2]] if len(common) >= 2 else [2023, 2024]
+        key_cols = [c for c in ['日期(轉換)', '進銷單號', '產品代號', '數量'] if c in df.columns]
+        if len(key_cols) >= 2:
+            b = len(df)
+            df = df.drop_duplicates(subset=key_cols, keep='first').reset_index(drop=True)
+            r = b - len(df)
+            self.stats.update(rows_after_dedup=len(df), duplicates_removed=r,
+                              dedup_strategy=f"基於: {', '.join(key_cols)}")
+            if r > 0: self.log.append(f"🗑️ 組合去重: -{r:,}")
         else:
-            years = [2023, 2024]
-    y1, y2 = years[0], years[1]
+            uc = [c for c in df.columns if not str(c).startswith('_')]
+            b = len(df)
+            df = df.drop_duplicates(subset=uc, keep='first').reset_index(drop=True)
+            r = b - len(df)
+            self.stats.update(rows_after_dedup=len(df), duplicates_removed=r,
+                              dedup_strategy="全欄位去重")
+            if r > 0: self.log.append(f"🗑️ 全欄位去重: -{r:,}")
+        return df
 
-    g = d2.groupby([ycol, mcol])[metric_col].sum().reset_index()
+    def _standardize_numeric(self, df):
+        cnt = 0
+        for col in df.columns:
+            if str(col).startswith('_'): continue
+            if self._m(col, self.NUMERIC_KW) and not self._m(col, self.ID_KW):
+                try:
+                    if df[col].dtype == 'object':
+                        df[col] = df[col].astype(str).str.replace(',','',regex=False)\
+                            .str.replace('$','',regex=False).str.replace('NT','',regex=False)\
+                            .str.replace('￥','',regex=False).str.strip()
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    cnt += 1
+                except Exception: pass
+        self.stats['numeric_cols_standardized'] = cnt
+        if cnt > 0: self.log.append(f"🔢 數值標準化: {cnt} 欄")
+        return df
 
-    base = pd.DataFrame({mcol: list(range(1, 13))})
-    y1s = g[g[ycol] == y1][[mcol, metric_col]].rename(columns={metric_col: f"{y1}"})
-    y2s = g[g[ycol] == y2][[mcol, metric_col]].rename(columns={metric_col: f"{y2}"})
+    def _negate_returns(self, df):
+        signed = [c for c in df.columns if '正負號' in str(c) or 'net' in str(c).lower()]
+        if signed:
+            self.log.append(f"ℹ️ 已有正負號欄位 {signed}，跳過銷退轉負")
+            return df
+        type_cols = [c for c in df.columns if self._m(c, self.TYPE_KW) and not str(c).startswith('_')]
+        if not type_cols:
+            self.log.append("ℹ️ 無單別欄位，跳過銷退轉負")
+            return df
+        num_cols = [c for c in df.columns
+                    if self._m(c, self.NUMERIC_KW) and not self._m(c, self.ID_KW)
+                    and not str(c).startswith('_') and pd.api.types.is_numeric_dtype(df[c])]
+        if not num_cols: return df
 
-    out = base.merge(y1s, on=mcol, how="left").merge(y2s, on=mcol, how="left")
-    out[f"{y1}"] = out[f"{y1}"].fillna(0)
-    out[f"{y2}"] = out[f"{y2}"].fillna(0)
+        total = 0
+        for tc in type_cols:
+            mask = df[tc].apply(lambda v: False if pd.isna(v) else self._m(str(v), self.RETURN_KW))
+            n = mask.sum()
+            if n > 0:
+                for nc in num_cols:
+                    df.loc[mask, nc] = -df.loc[mask, nc].abs()
+                total += n
+                self.stats['return_type_col'] = tc
+                self.log.append(f"🔄 銷退轉負: '{tc}' {n:,} 筆 → {len(num_cols)} 個數值欄位取負")
+        self.stats['return_rows_negated'] = total
+        return df
 
-    denom = out[f"{y1}"].replace(0, np.nan)
-    out["成長率(%)"] = (out[f"{y2}"] - out[f"{y1}"]) / denom * 100
-    out["月份"] = out[mcol].astype(int).apply(lambda x: f"{x:02d}")
+    def _convert_dates(self, df):
+        cnt = 0
+        for col in df.columns:
+            if str(col).startswith('_'): continue
+            if self._m(col, self.DATE_KW):
+                try:
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    cnt += 1
+                except Exception: pass
+        if '日期(轉換)' in df.columns:
+            try:
+                df['日期(轉換)'] = pd.to_datetime(df['日期(轉換)'], errors='coerce')
+                df['_年份'] = df['日期(轉換)'].dt.year.astype('Int64')
+                df['_月份'] = df['日期(轉換)'].dt.month.astype('Int64')
+                df['_季度'] = df['日期(轉換)'].dt.quarter.astype('Int64')
+                df['_年月'] = df['日期(轉換)'].dt.strftime('%Y-%m')
+                cnt += 1
+                self.log.append("📅 日期標準化: 日期(轉換) → _年份/_月份/_季度/_年月")
+            except Exception:
+                try:
+                    p = pd.to_datetime(df['日期(轉換)'], errors='coerce')
+                    df['_年份'] = p.dt.year; df['_月份'] = p.dt.month
+                except Exception: pass
+        if '_年份' not in df.columns:
+            for col in df.columns:
+                if self._m(col, self.DATE_KW) and not str(col).startswith('_'):
+                    if pd.api.types.is_datetime64_any_dtype(df[col]):
+                        df['_年份'] = df[col].dt.year.astype('Int64')
+                        df['_月份'] = df[col].dt.month.astype('Int64')
+                        df['_年月'] = df[col].dt.strftime('%Y-%m')
+                        break
+        self.stats['date_cols_processed'] = cnt
+        return df
 
-    meta = {
-        "y1": y1,
-        "y2": y2,
-        "metric_col": metric_col,
-        "metric_kind": metric_kind,
-        "month_col": mcol,
-        "year_col": ycol,
-    }
-    return out[["月份", f"{y1}", f"{y2}", "成長率(%)"]], meta
-
-
-def build_trend_monthly(df: pd.DataFrame, question: str, plan: dict) -> Tuple[pd.DataFrame, dict]:
-    date_col = (plan.get("date_col") or "").strip()
-    year_col = (plan.get("year_col") or "").strip()
-    month_col = (plan.get("month_col") or "").strip()
-    d2, ycol, mcol = ensure_year_month(df, date_col, year_col, month_col)
-
-    metric_kind, metric_col = choose_metric_col(d2, question, plan)
-    d2 = d2.copy()
-    d2[ycol] = pd.to_numeric(d2[ycol], errors="coerce")
-    d2[mcol] = pd.to_numeric(d2[mcol], errors="coerce")
-    d2[metric_col] = pd.to_numeric(d2[metric_col], errors="coerce").fillna(0)
-
-    g = d2.groupby([ycol, mcol])[metric_col].sum().reset_index()
-    g = g.dropna(subset=[ycol, mcol])
-    g[ycol] = g[ycol].astype(int)
-    g[mcol] = g[mcol].astype(int)
-    g["年月"] = g[ycol].astype(str) + "-" + g[mcol].apply(lambda x: f"{x:02d}")
-    g = g.sort_values(["年月"]).reset_index(drop=True)
-
-    meta = {
-        "metric_col": metric_col,
-        "metric_kind": metric_kind,
-        "year_col": ycol,
-        "month_col": mcol,
-    }
-    return g[["年月", metric_col]].rename(columns={metric_col: "數值"}), meta
-
-
-def guess_dimension_col(df: pd.DataFrame, plan: dict) -> str:
-    dims = plan.get("dimensions", {}) or {}
-    candidates = [
-        (dims.get("product_col") or "").strip(),
-        (dims.get("salesperson_col") or "").strip(),
-        (dims.get("vendor_col") or "").strip(),
-    ]
-    for c in candidates:
-        if c and c in df.columns:
-            return c
-
-    # guess by name
-    for c in df.columns:
-        cn = str(c)
-        if any(k in cn for k in ["產品", "品名", "料號", "產品代號"]):
-            return c
-    for c in df.columns:
-        cn = str(c)
-        if any(k in cn for k in ["業務", "業務員"]):
-            return c
-    for c in df.columns:
-        cn = str(c)
-        if any(k in cn for k in ["供應商", "廠商", "vendor"]):
-            return c
-    # fallback
-    return str(df.columns[0])
-
-
-def build_topn(df: pd.DataFrame, question: str, plan: dict) -> Tuple[pd.DataFrame, dict]:
-    topn = int(plan.get("topn") or TOPN_DEFAULT)
-    metric_kind, metric_col = choose_metric_col(df, question, plan)
-    dim_col = guess_dimension_col(df, plan)
-
-    d2 = df.copy()
-    d2[metric_col] = pd.to_numeric(d2[metric_col], errors="coerce").fillna(0)
-
-    g = d2.groupby(dim_col)[metric_col].sum().reset_index()
-    g = g.sort_values(metric_col, ascending=False).head(topn).reset_index(drop=True)
-    g = g.rename(columns={dim_col: "項目", metric_col: "數值"})
-
-    meta = {
-        "metric_col": metric_col,
-        "metric_kind": metric_kind,
-        "dim_col": dim_col,
-        "topn": topn,
-    }
-    return g, meta
+    def _finalize_meta(self, df, meta):
+        meta['total_rows'] = len(df)
+        meta['columns'] = [c for c in df.columns if not str(c).startswith('_')]
+        for col in df.columns:
+            if str(col).startswith('_'): continue
+            if pd.api.types.is_numeric_dtype(df[col]):
+                meta['numeric_columns'].append(col)
+            elif pd.api.types.is_datetime64_any_dtype(df[col]):
+                meta['date_columns'].append(col)
+            else:
+                meta['categorical_columns'].append(col)
+        if '_年份' in df.columns:
+            try:
+                meta['years'] = sorted([int(y) for y in df['_年份'].dropna().unique()])
+            except Exception: pass
+        for col in ['對方品名/品名備註', '產品代號', '客戶供應商簡稱', '單別名稱', '_工作表']:
+            if col in df.columns:
+                try: meta['unique_values'][col] = df[col].dropna().unique().tolist()[:100]
+                except Exception: pass
+        for col in meta['columns'][:15]:
+            try: meta['sample_data'][col] = df[col].dropna().head(5).tolist()
+            except Exception: pass
+        summary = {}
+        if '_工作表' in df.columns:
+            summary['sheet_distribution'] = df['_工作表'].value_counts().to_dict()
+        if '_年份' in df.columns:
+            summary['year_distribution'] = df['_年份'].value_counts().sort_index().to_dict()
+        for col in meta['numeric_columns'][:5]:
+            if col in df.columns:
+                try:
+                    summary[f'{col}_stats'] = dict(
+                        sum=float(df[col].sum()), mean=float(df[col].mean()),
+                        min=float(df[col].min()), max=float(df[col].max()))
+                except Exception: pass
+        meta['data_summary'] = summary
 
 
-def build_generic_summary(df: pd.DataFrame, question: str, plan: dict) -> Tuple[pd.DataFrame, dict]:
-    """Generic summary when no specific task type is detected."""
-    metric_kind, metric_col = choose_metric_col(df, question, plan)
-    
-    # Try to provide a useful summary
-    summary_data = {
-        "指標": ["總筆數", "總計", "平均", "最大值", "最小值"],
-        "數值": [
-            len(df),
-            df[metric_col].sum() if metric_col in df.columns and pd.api.types.is_numeric_dtype(df[metric_col]) else "N/A",
-            df[metric_col].mean() if metric_col in df.columns and pd.api.types.is_numeric_dtype(df[metric_col]) else "N/A",
-            df[metric_col].max() if metric_col in df.columns and pd.api.types.is_numeric_dtype(df[metric_col]) else "N/A",
-            df[metric_col].min() if metric_col in df.columns and pd.api.types.is_numeric_dtype(df[metric_col]) else "N/A",
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  ENGINE 2: 語意感知模組                                       ║
+# ╚══════════════════════════════════════════════════════════════╝
+class SemanticDetectionModule:
+    def audit(self, df, meta):
+        cols = [c for c in df.columns if not str(c).startswith('_')]
+        signed_cols = [c for c in cols if '正負號' in c or '含正負' in c]
+        a = dict(
+            product_name_cols=self._names(cols),
+            product_code_cols=self._codes(cols),
+            date_cols=self._dates(cols),
+            numeric_cols=meta.get('numeric_columns', []),
+            type_cols=self._types(cols),
+            customer_cols=self._custs(cols),
+            has_signed_cols=signed_cols,
+            qty_signed_col=self._find_col(signed_cols, ['數量']),
+            amount_signed_col=self._find_col(signed_cols, ['金額', '未稅']),
+            amount_untaxed_col=self._find_col(cols, ['未稅金額', '未稅']),
+            amount_taxed_col=self._find_col(cols, ['含稅金額', '含稅']),
+            qty_col=self._find_col(cols, ['數量']),
+        )
+        a['summary_text'] = self._summary(a)
+        return a
+
+    def _find_col(self, cols, keywords):
+        """找第一個匹配的欄位名"""
+        for c in cols:
+            cl = c.lower()
+            if any(k in cl for k in keywords):
+                return c
+        return None
+
+    def _names(self, cols):
+        nk = ['品名', '備註', 'name', 'description', '品項', '商品']
+        ek = ['代號', 'code', 'id', 'sku', '編號', '貨號', '單別', '類別', 'type', '類型']
+        return [c for c in cols if any(k in c.lower() for k in nk) and not any(k in c.lower() for k in ek)]
+
+    def _codes(self, cols):
+        ck = ['代號', 'code', 'sku', '貨號', '料號']
+        return [c for c in cols if any(k in c.lower() for k in ck)]
+
+    def _dates(self, cols):
+        dk = ['日期', 'date', '時間']
+        return [c for c in cols if any(k in c.lower() for k in dk)]
+
+    def _types(self, cols):
+        tk = ['單別', '類型', 'type', '單別名稱']
+        return [c for c in cols if any(k in c.lower() for k in tk)]
+
+    def _custs(self, cols):
+        ck = ['客戶', '廠商', 'customer', 'vendor', '供應商', '公司', '業務']
+        return [c for c in cols if any(k in c.lower() for k in ck)]
+
+    def _summary(self, a):
+        lines = [
+            f"📦 產品名稱欄位: {a['product_name_cols'] or '未偵測'}",
+            f"🏷️ 產品代號欄位: {a['product_code_cols'] or '未偵測'}",
+            f"📅 日期欄位: {a['date_cols'] or '未偵測'}",
+            f"💰 數值欄位: {a['numeric_cols'][:8]}...",
+            f"📋 單別欄位: {a['type_cols'] or '未偵測'}",
+            f"👤 客戶欄位: {a['customer_cols'] or '未偵測'}",
         ]
-    }
-    
-    summary_df = pd.DataFrame(summary_data)
-    
-    meta = {
-        "metric_col": metric_col,
-        "metric_kind": metric_kind,
-    }
-    return summary_df, meta
+        if a.get('has_signed_cols'):
+            lines.append(f"✅ 含正負號欄位: {a['has_signed_cols']}")
+        if a.get('qty_signed_col'):
+            lines.append(f"📊 淨數量欄位: {a['qty_signed_col']}")
+        if a.get('amount_signed_col'):
+            lines.append(f"💵 淨金額欄位: {a['amount_signed_col']}")
+        return '\n'.join(lines)
 
 
-# =========================
-# Plot templates (stable)
-# =========================
-def plot_yoy(yoy_df: pd.DataFrame, meta: dict, chart_type: str = "bar") -> go.Figure:
-    y1 = meta["y1"]
-    y2 = meta["y2"]
-    title = f"{y1} vs {y2} 月度比較（同月份對齊）"
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  ENGINE 3: 邏輯大腦層                                        ║
+# ╚══════════════════════════════════════════════════════════════╝
+class LogicalBrainEngine:
+    def __init__(self, api_key):
+        self.client = OpenAI(api_key=api_key)
+        self.model = GPT_MODEL
 
-    # Professional color palette
-    color_y1 = "#3b82f6"  # Blue
-    color_y2 = "#f59e0b"  # Orange
-    color_yoy = "#10b981"  # Green
-
-    if chart_type == "line":
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=yoy_df["月份"], y=yoy_df[str(y1)], 
-            mode="lines+markers", name=f"{y1}",
-            line=dict(color=color_y1, width=2),
-            marker=dict(size=8)
-        ))
-        fig.add_trace(go.Scatter(
-            x=yoy_df["月份"], y=yoy_df[str(y2)], 
-            mode="lines+markers", name=f"{y2}",
-            line=dict(color=color_y2, width=2),
-            marker=dict(size=8)
-        ))
-        fig.add_trace(go.Scatter(
-            x=yoy_df["月份"],
-            y=yoy_df["成長率(%)"],
-            mode="lines+markers",
-            name="成長率(%)",
-            yaxis="y2",
-            line=dict(color=color_yoy, width=2, dash="dot"),
-            marker=dict(size=6)
-        ))
-        fig.update_layout(
-            title=dict(text=title, font=dict(size=16)),
-            xaxis_title="月份",
-            yaxis=dict(title="數值", gridcolor="#e5e7eb"),
-            yaxis2=dict(title="成長率(%)", overlaying="y", side="right", gridcolor="#e5e7eb"),
-            legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-            margin=dict(l=60, r=60, t=80, b=60),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-        return fig
-
-    if chart_type == "yoy_only":
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=yoy_df["月份"],
-            y=yoy_df["成長率(%)"],
-            mode="lines+markers",
-            name="成長率(%)",
-            line=dict(color=color_yoy, width=3),
-            marker=dict(size=10),
-            fill="tozeroy",
-            fillcolor="rgba(16, 185, 129, 0.1)"
-        ))
-        fig.update_layout(
-            title=dict(text=title + "｜只顯示成長率", font=dict(size=16)),
-            xaxis_title="月份",
-            yaxis_title="成長率(%)",
-            legend=dict(orientation="h", y=1.12),
-            margin=dict(l=60, r=60, t=80, b=60),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-            yaxis=dict(gridcolor="#e5e7eb", zeroline=True, zerolinecolor="#ef4444", zerolinewidth=2),
-        )
-        return fig
-
-    # default bar + yoy line
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=yoy_df["月份"], y=yoy_df[str(y1)], name=f"{y1}",
-        marker_color=color_y1, opacity=0.85
-    ))
-    fig.add_trace(go.Bar(
-        x=yoy_df["月份"], y=yoy_df[str(y2)], name=f"{y2}",
-        marker_color=color_y2, opacity=0.85
-    ))
-    fig.add_trace(go.Scatter(
-        x=yoy_df["月份"],
-        y=yoy_df["成長率(%)"],
-        name="成長率(%)",
-        yaxis="y2",
-        mode="lines+markers",
-        line=dict(color=color_yoy, width=2),
-        marker=dict(size=8)
-    ))
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=16)),
-        xaxis_title="月份",
-        yaxis=dict(title="數值", gridcolor="#e5e7eb"),
-        yaxis2=dict(title="成長率(%)", overlaying="y", side="right"),
-        barmode="group",
-        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-        margin=dict(l=60, r=60, t=80, b=60),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-    return fig
-
-
-def plot_trend(trend_df: pd.DataFrame) -> go.Figure:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=trend_df["年月"], y=trend_df["數值"], 
-        mode="lines+markers", name="數值",
-        line=dict(color="#3b82f6", width=2),
-        marker=dict(size=6),
-        fill="tozeroy",
-        fillcolor="rgba(59, 130, 246, 0.1)"
-    ))
-    fig.update_layout(
-        title=dict(text="月度趨勢", font=dict(size=16)),
-        xaxis_title="年月",
-        yaxis_title="數值",
-        legend=dict(orientation="h", y=1.12),
-        margin=dict(l=60, r=60, t=80, b=60),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        xaxis=dict(gridcolor="#e5e7eb"),
-        yaxis=dict(gridcolor="#e5e7eb"),
-    )
-    return fig
-
-
-def plot_topn(top_df: pd.DataFrame, topn: int = 10) -> go.Figure:
-    # Reverse for horizontal bar chart (highest on top)
-    df_plot = top_df.head(topn).iloc[::-1]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df_plot["數值"], 
-        y=df_plot["項目"].astype(str), 
-        orientation='h',
-        name="數值",
-        marker_color="#3b82f6",
-        text=df_plot["數值"].apply(lambda x: f"{x:,.0f}"),
-        textposition="outside"
-    ))
-    fig.update_layout(
-        title=dict(text=f"TOP{topn} 排名", font=dict(size=16)),
-        xaxis_title="數值",
-        yaxis_title="項目",
-        legend=dict(orientation="h", y=1.12),
-        margin=dict(l=150, r=80, t=80, b=60),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        xaxis=dict(gridcolor="#e5e7eb"),
-        height=max(400, topn * 35),
-    )
-    return fig
-
-
-# =========================
-# "Memory" state management
-# =========================
-def init_state():
-    if "dfs" not in st.session_state:
-        st.session_state.dfs = {}
-    if "profiles" not in st.session_state:
-        st.session_state.profiles = {}
-    if "messages" not in st.session_state:
-        st.session_state.messages = []  # chat history
-    if "analysis_state" not in st.session_state:
-        # last analysis context
-        st.session_state.analysis_state = {
-            "table_key": "",
-            "task_type": "",
-            "years": [],
-            "metric_col": "",
-            "metric_kind": "",
-            "filters": [],
-            "dim_col": "",
-            "last_table_name": "",
-            "last_result_table_name": "",
-        }
-    if "last_artifacts" not in st.session_state:
-        # last produced result tables to support follow-ups
-        st.session_state.last_artifacts = {
-            "tables": {},   # name -> df
-            "fig": None,    # plotly fig
-            "meta": {},     # meta info (yoy / trend / topn)
-            "kind": "",     # "yoy" | "trend" | "topn" | "preview"
-        }
-
-
-# =========================
-# App start
-# =========================
-api_key = require_api_key()
-client = OpenAI(api_key=api_key)
-init_state()
-
-# Sidebar
-with st.sidebar:
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem 0;">
-        <h2 style="margin: 0;">🧠 AI 分析助理</h2>
-        <p style="opacity: 0.6; font-size: 0.75rem;">上下文記憶版</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.divider()
-    
-    st.subheader("📁 上傳資料")
-    uploads = st.file_uploader("上傳 Excel（可多選）", type=["xlsx"], accept_multiple_files=True)
-
-    if uploads:
-        dfs: Dict[str, pd.DataFrame] = {}
-        profiles: Dict[str, TableProfile] = {}
-
-        for uf in uploads:
-            try:
-                temp = read_excel_all_sheets(uf)
-            except Exception as e:
-                st.error(f"讀取 {uf.name} 失敗：{e}")
+    def _schema(self, df, meta):
+        p = []
+        p.append(f"## 資料: {len(df):,} 筆, 年份: {meta.get('years',[])}, 檔案: {meta.get('files',[])}, 工作表: {len(meta.get('sheets',[]))} 個")
+        if meta.get('data_summary',{}).get('year_distribution'):
+            p.append("\n## 年份分布")
+            for y, c in meta['data_summary']['year_distribution'].items():
+                p.append(f"- {y}年: {c:,} 筆")
+        p.append("\n## 欄位")
+        for col in df.columns:
+            if str(col).startswith('_') and col not in ['_年份','_月份','_季度','_年月','_工作表']:
                 continue
+            try: dt, u = str(df[col].dtype), df[col].nunique()
+            except: dt, u = '?', 0
+            tag = ""
+            if col == '對方品名/品名備註': tag = "⭐[品名-str.contains()]"
+            elif col == '產品代號': tag = "⭐[代號-英數]"
+            elif '正負號' in str(col) or '含正負' in str(col): tag = "⭐⭐[已含正負號-優先使用!]"
+            elif '未稅' in str(col) and '正負' not in str(col): tag = "⭐[未稅金額-算ASP用此欄]"
+            elif col in ('數量',): tag = "⭐[數量-後端已轉負]"
+            elif '含稅' in str(col): tag = "⚠️[含稅-不要用來算ASP]"
+            elif '金額' in str(col): tag = "⭐[金額]"
+            elif col == '客戶供應商簡稱': tag = "⭐[客戶]"
+            elif col == '單別名稱': tag = "⭐[單別-交易類型,不是產品名!]"
+            elif col == '_工作表': tag = "⭐[工作表來源]"
+            elif col == '_年份': tag = "[整數]"
+            p.append(f"- **{col}** ({dt}) {u:,}唯一值 {tag}")
+        p.append("\n### 輔助欄位: _年份(int), _月份(int), _季度(int), _年月(str), _工作表(str)")
+        if meta.get('unique_values'):
+            p.append("\n## 重要欄位值")
+            for col, vals in meta['unique_values'].items():
+                p.append(f"### {col} (共{len(vals)})\n```\n{vals[:20]}\n```")
+        return '\n'.join(p)
 
-            for k, df in temp.items():
-                df2 = light_datetime_parse(df)
-                dfs[k] = df2
-                profiles[k] = build_profile(k, df2)
+    def _sysprompt(self, df, meta, audit, query):
+        schema = self._schema(df, meta)
+        nc = audit.get('product_name_cols', ['對方品名/品名備註'])
+        cc = audit.get('product_code_cols', ['產品代號'])
+        cu = audit.get('customer_cols', ['客戶供應商簡稱'])
+        tc = audit.get('type_cols', ['單別名稱'])
+        rc, rch = None, None
+        for cn, ck in COLOR_NAME_MAP.items():
+            if cn in query.lower(): rc = ck; break
+        for cn, ct in CHART_TYPE_MAP.items():
+            if cn in query.lower(): rch = ct; break
 
-        st.session_state.dfs = dfs
-        st.session_state.profiles = profiles
+        # 安全防護：type_cols 不能混入 name_cols
+        type_col_set = set(tc)
+        nc_safe = [c for c in nc if c not in type_col_set]
+        if not nc_safe:
+            for fb in ['對方品名/品名備註', '品名備註', '品名', '產品名稱']:
+                if fb in df.columns:
+                    nc_safe = [fb]; break
+            if not nc_safe:
+                nc_safe = ['對方品名/品名備註']
 
-    if st.session_state.dfs:
-        st.success(f"✅ 已載入 {len(st.session_state.dfs)} 張表")
-        with st.expander("查看表清單", expanded=False):
-            for k, p in st.session_state.profiles.items():
-                st.write(f"- {k}（{p.rows}×{p.cols}）")
-    else:
-        st.info("📤 先上傳 Excel 才能開始問")
+        name_col = nc_safe[0]
+        code_col = cc[0] if cc else '產品代號'
+        cust_col = cu[0] if cu else '客戶供應商簡稱'
+        type_col = tc[0] if tc else '單別名稱'
 
-    st.divider()
-    if st.button("🧹 清除對話", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.analysis_state = {
-            "table_key": "", "task_type": "", "years": [], "metric_col": "",
-            "metric_kind": "", "filters": [], "dim_col": "",
-            "last_table_name": "", "last_result_table_name": "",
-        }
-        st.session_state.last_artifacts = {"tables": {}, "fig": None, "meta": {}, "kind": ""}
-        st.rerun()
-    
-    st.divider()
-    
-    with st.expander("💡 使用技巧", expanded=False):
-        st.markdown("""
-        **比較分析（同月份對齊）**
-        - 「比較 2023 vs 2024 每月銷售數量」
-        - 「對比去年今年的採購金額」
+        # 偵測正負號欄位
+        qty_signed = audit.get('qty_signed_col', '')
+        amt_signed = audit.get('amount_signed_col', '')
+        amt_untaxed = audit.get('amount_untaxed_col', '')
+        has_signed = bool(qty_signed or amt_signed)
+
+        # 決定淨額/淨量的使用欄位
+        if qty_signed:
+            net_qty_expr = f"df['{qty_signed}']"
+            net_qty_note = f"✅ 使用已含正負號欄位 `{qty_signed}`"
+        else:
+            net_qty_expr = "df['數量']  # 後端已對銷退轉負"
+            net_qty_note = "✅ 後端已將銷退數量轉為負數，直接 sum()"
+
+        if amt_signed:
+            net_amt_expr = f"df['{amt_signed}']"
+            net_amt_note = f"✅ 使用已含正負號欄位 `{amt_signed}`"
+        elif amt_untaxed:
+            net_amt_expr = f"df['{amt_untaxed}']  # 後端已對銷退轉負"
+            net_amt_note = f"✅ 使用未稅金額 `{amt_untaxed}`"
+        else:
+            net_amt_expr = "df['未稅金額']  # 後端已對銷退轉負"
+            net_amt_note = "✅ 後端已將銷退金額轉為負數"
+
+        return f"""你是 v16.1 企業級數據分析 AI，擁有會計邏輯與資料視覺化專長。
+資料來源：df（已預載入，含 _年份, _月份, _季度, _年月, _工作表 輔助欄位）。
+
+# 🛡️ 絕對安全協議（違反即失敗）
+1. **禁止 import**：嚴禁 `import matplotlib`, `plt`, `pandas`。直接用環境中的 pd, df。
+2. **完整性**：禁止寫 `# ...` 省略號。程式碼必須完整可執行。
+3. **繪圖**：不要自己畫圖！生成 `chart_config` 字典即可，系統會自動繪圖。
+4. **全量運算**：必須處理全部 {len(df):,} 行，禁止 .head() 或 .sample() 計算。
+
+# 📐 會計運算邏輯（本系統核心 — 違反會算錯！）
+
+## 1. 淨額原則 (Net Amount Principle)
+- **公式：** Net = Sales - Returns
+- **淨數量：** {net_qty_note}
+  - 取值：`{net_qty_expr}`
+- **淨金額：** {net_amt_note}
+  - 取值：`{net_amt_expr}`
+- ⚠️ 嚴禁再寫額外減法邏輯（如 sales - returns），否則重複扣除！
+- ⚠️ 嚴禁使用「含稅金額」計算平均單價！
+
+## 2. 平均單價 (ASP) 公式 — 最重要！
+- **正確：** ASP = SUM(未稅淨額) / SUM(淨數量)
+- **程式碼：**
+```python
+net_amount = filtered['{amt_signed or amt_untaxed or "未稅金額"}'].sum()
+net_qty = filtered['{qty_signed or "數量"}'].sum()
+asp = net_amount / net_qty if net_qty != 0 else 0
+```
+- ❌ 嚴禁：`含稅金額.sum() / 數量.sum()` → 這會算錯！
+
+## 3. 產品分類定義 (Product Taxonomy)
+- **發泡刷**：`df['{name_col}'].str.contains('發泡刷', case=False, na=False)`
+- **DIB陶瓷刷**：`(df['{code_col}'].str.startswith('DIB', na=False)) & (df['{name_col}'].str.contains('陶瓷刷', case=False, na=False))`
+- **其他陶瓷刷**：`(~df['{code_col}'].str.startswith('DIB', na=False)) & (df['{name_col}'].str.contains('陶瓷刷', case=False, na=False))`
+
+# ⭐⭐⭐ 欄位用途對照表（違反即錯）⭐⭐⭐
+
+| 要查什麼 | 正確欄位 | 說明 |
+|----------|----------|------|
+| 產品名稱 (發泡刷/陶瓷刷) | `{name_col}` | str.contains() 模糊搜尋 |
+| 產品代號 (BFB-236/DIB-001) | `{code_col}` | ==, startswith |
+| 客戶/廠商 (華通/欣興) | `{cust_col}` | str.contains() |
+| 單別/交易類型 (銷貨/銷退) | `{type_col}` | ⚠️ 這是交易類型，不是產品！|
+| 淨數量 | `{qty_signed or '數量'}` | 已含正負號或後端已轉負 |
+| 淨金額(未稅) | `{amt_signed or amt_untaxed or '未稅金額'}` | 算 ASP 必須用此欄 |
+
+## 🚨 絕對禁止
+- ❌ `df['{type_col}'].str.contains('發泡刷')` → {type_col} 是交易類型！不是產品！
+- ❌ `df['{code_col}'].str.contains('發泡刷')` → 代號欄是英數，不含中文！
+- ❌ 用「含稅金額」算 ASP
+- ✅ `df['{name_col}'].str.contains('發泡刷', case=False, na=False)` → 正確！
+
+## 📊 圖表觸發機制 (One-Shot Charting)
+- 只要問題含 ['圖', 'chart', '趨勢', '佔比', '分佈', '比例', '排名', 'top', 'pie', 'bar', 'line']：
+  - `need_chart` **必須** 為 `true`
+  - **必須** 生成 `chart_config`
+  - 除非查無資料 (len(result_df)==0)
+
+## 🎨 跨年份比較圖表規則 (Visual Fix v16.1) — 極重要！
+⚠️ 當用戶意圖為「比較」、「趨勢」、「同期」且涉及**多個年份**時：
+### 規則：
+1. **X 軸必須使用 `_月份` (1-12)**，不要用 `_年月` 或時間連續軸
+2. **Color 必須使用 `_年份`**，且**必須先轉字串**：`df['_年份'].astype(str)`
+   - ❌ 錯誤：`color='_年份'` → 會畫成漸層色
+   - ✅ 正確：先做 `df['年份(文字)'] = df['_年份'].astype(str)`，然後 `color='年份(文字)'`
+3. **結果**：多條線/長條會疊加在同一個月份軸上，可進行同期比較
+
+### 範例：2023-2025 三年同期比較
+```python
+# 篩選多年資料
+multi_year = df[df['_年份'].isin([2023, 2024, 2025])].copy()
+multi_year['年份(文字)'] = multi_year['_年份'].astype(str)  # ⭐ 關鍵步驟
+
+# 按年份和月份分組
+result_df = multi_year.groupby(['_月份', '年份(文字)'])['數量'].sum().reset_index()
+result_df.columns = ['月份', '年份', '數量']
+result_df = result_df.sort_values(['月份', '年份'])
+
+# chart_config 設定
+chart_config = {{
+    'x': '月份',           # ⭐ 使用月份 (1-12)
+    'y': '數量',
+    'color': '年份',       # ⭐ 使用年份(文字) 作為分類
+    'title': '2023-2025年發泡刷月銷量同期比較'
+}}
+```
+
+### 何時觸發此規則：
+- 問題包含：「比較」、「對比」、「同期」、「趨勢」、「vs」、「相比」
+- 且涉及：2 個以上年份 (如「2024 vs 2025」、「近三年」、「歷年」)
+- 圖表類型：line（折線圖）、bar（長條圖）、area（面積圖）
+
+## 🔍 空結果處理
+- 當篩選結果為空 (len==0)：
+  - answer 必須寫「🔍 經查詢，該條件下無數據記錄」
+  - need_chart 設為 false
+  - result_df 設為空 DataFrame 加上說明欄
+
+## ⭐ 篩選防呆
+- 問題含特定實體 → 第一步 target_df = df[condition]，再對 target_df 計算
+
+{schema}
+
+# 用戶: {query}
+# 顏色: {rc or '未指定'}, 圖表: {rch or 'AI決定'}
+
+# 📤 JSON 格式
+{{
+  "answer": "分析結論（若查無資料請明確告知）。請加入商業洞察，不要只給冷冰冰的數字描述。",
+  "thinking": "1. 篩選條件... 2. 使用欄位... 3. 計算邏輯...",
+  "need_chart": true/false,
+  "chart_type": "{rch or 'bar'}",
+  "chart_color": "{rc or ''}",
+  "code": "完整可執行的 Python 程式碼"
+}}
+
+# 💻 程式碼規範
+- df 已在環境中，result_df = DataFrame, chart_config = dict
+- 禁止 import / matplotlib / plt
+- chart_config 的 x,y,color 必須是**字串**！不能是列表！
+- 年份用 _年份(整數), 品名用 str.contains() 搜 '{name_col}'
+- 圓餅圖最多 Top 8，其餘合併「其他」
+- 排序：年月 ascending=True，數量金額 ascending=False
+
+## 範本：三類產品佔比（圓餅圖）
+```python
+f2025 = df[df['_年份'] == 2025].copy()
+foam = f2025[f2025['{name_col}'].str.contains('發泡刷', case=False, na=False)]
+dib_cer = f2025[(f2025['{code_col}'].str.startswith('DIB', na=False)) & (f2025['{name_col}'].str.contains('陶瓷刷', case=False, na=False))]
+other_cer = f2025[(~f2025['{code_col}'].str.startswith('DIB', na=False)) & (f2025['{name_col}'].str.contains('陶瓷刷', case=False, na=False))]
+qty_col = '{qty_signed or "數量"}'
+result_df = pd.DataFrame({{
+    '品名': ['發泡刷', 'DIB陶瓷刷', '其他陶瓷刷'],
+    '數量': [foam[qty_col].sum(), dib_cer[qty_col].sum(), other_cer[qty_col].sum()]
+}})
+chart_config = {{'x': '品名', 'y': '數量', 'title': '2025年三大產品線淨銷量佔比'}}
+```
+
+## 範本：平均單價 (ASP)
+```python
+filtered = df[(df['_年份'] == 2025) & (df['{name_col}'].str.contains('發泡刷', case=False, na=False))].copy()
+net_amt = filtered['{amt_signed or amt_untaxed or "未稅金額"}'].sum()
+net_qty = filtered['{qty_signed or "數量"}'].sum()
+asp = round(net_amt / net_qty, 2) if net_qty != 0 else 0
+result_df = pd.DataFrame({{'指標': ['淨數量', '未稅淨額', '平均單價(ASP)'], '值': [net_qty, net_amt, asp]}})
+chart_config = {{'title': '2025年發泡刷平均單價分析'}}
+```
+
+## 範本：查無資料處理
+```python
+filtered = df[(df['{cust_col}'].str.contains('華通', case=False, na=False)) & (df['_年份'] == 2024) & (df['{code_col}'].str.startswith('DIB', na=False))].copy()
+if len(filtered) == 0:
+    result_df = pd.DataFrame({{'說明': ['🔍 經查詢，華通 2024 年無購買 DIB 陶瓷刷紀錄']}})
+    chart_config = {{}}
+else:
+    result_df = filtered.groupby('_月份')['{qty_signed or "數量"}'].sum().reset_index()
+    result_df.columns = ['月份', '淨數量']
+    chart_config = {{'x': '月份', 'y': '淨數量', 'title': '華通2024年DIB陶瓷刷月銷量'}}
+```
+
+# 檢查清單
+1. x,y,color 是字串 2. _年份整數 3. str.contains() 搜 '{name_col}' 4. reset_index(drop=True)
+5. ASP 用未稅淨額/淨數量 6. 無銷退減法 7. 圓餅Top8 8. 程式碼完整
+9. ⚠️ 絕對不用 '{type_col}' 搜產品名 10. 查無資料要回報 11. 問圖表必給 chart_config"""
+
+    def analyze(self, query, df, meta, audit, history):
+        msgs = [{"role": "system", "content": self._sysprompt(df, meta, audit, query)}]
+        for h in history[-3:]:
+            msgs.append({"role": "user", "content": h.get('query', '')})
+            if h.get('code'):
+                msgs.append({"role": "assistant", "content": json.dumps(
+                    {"answer": h.get('answer',''), "code": h.get('code','')[:500]}, ensure_ascii=False)})
+        msgs.append({"role": "user", "content": query})
+        try:
+            r = self.client.chat.completions.create(
+                model=self.model, messages=msgs, temperature=TEMPERATURE,
+                response_format={"type": "json_object"}, max_tokens=4000)
+            result = json.loads(r.choices[0].message.content)
+            if self._forbidden(result.get('code', '')): return self._fallback()
+
+            # ⭐ 圖表觸發機制：強制 need_chart
+            chart_kw = ['圖', 'chart', '趨勢', '佔比', '分佈', '比例', '排名', 'top', 'pie', 'bar', 'line']
+            if any(k in query.lower() for k in chart_kw):
+                result['need_chart'] = True
+
+            return result
+        except Exception as e:
+            return dict(answer=f"錯誤: {e}", thinking=traceback.format_exc(),
+                        need_chart=False, chart_type="none", chart_color="", code="")
+
+    def _forbidden(self, code):
+        # 精確安全檢查：只擋真正危險的操作，不誤殺正常程式碼
+        dangerous_imports = ['import os', 'import sys', 'import subprocess',
+                             'import shutil', 'from os', 'from sys',
+                             'from subprocess', 'from shutil']
+        dangerous_calls = ['exec(', 'eval(', 'os.system', 'os.popen',
+                           'subprocess.', 'shutil.rmtree', '__import__']
+        dangerous_other = ['matplotlib', 'plt.show', 'plt.savefig']
+        all_checks = dangerous_imports + dangerous_calls + dangerous_other
+        return any(f in code for f in all_checks)
+
+    def _fallback(self):
+        return dict(answer="程式碼不安全，請重新描述。", thinking="安全檢查失敗",
+                    need_chart=False, chart_type="none", chart_color="", code="")
+
+    def execute_code(self, code, df):
+        if not code or not code.strip(): return False, None, {}, "無程式碼"
+        if self._forbidden(code): return False, None, {}, "禁止內容"
+        g = {'pd': pd, 'np': np, 'df': df.copy(), 'result_df': None, 'chart_config': {}}
+        try:
+            exec(code, g)
+            rdf = g.get('result_df')
+            cc = self._fix_cc(g.get('chart_config', {}), rdf)
+            if rdf is None:
+                for k, v in g.items():
+                    if isinstance(v, pd.DataFrame) and k != 'df' and len(v) > 0:
+                        rdf = v; break
+            if rdf is None: return False, None, {}, "無 result_df"
+            if isinstance(rdf, pd.Series): rdf = rdf.reset_index()
+            elif not isinstance(rdf, pd.DataFrame): rdf = pd.DataFrame({'結果': [rdf]})
+            # ⭐ 允許空 result_df（查無資料情境），不再回傳失敗
+            return True, rdf, cc, ""
+        except Exception as e:
+            return False, None, {}, f"執行錯誤: {e}\n{traceback.format_exc()}"
+
+    def _fix_cc(self, cc, rdf):
+        if not cc: return {}
+        f = {}
+        for k in ['x','y','color']:
+            if k in cc:
+                v = cc[k]
+                f[k] = str(v[0]) if isinstance(v, list) and v else str(v) if v else ''
+        for k in ['title','labels','text']:
+            if k in cc: f[k] = cc[k]
+        if rdf is not None and len(rdf.columns) >= 2:
+            cols = list(rdf.columns)
+            if 'x' not in f or not f.get('x'): f['x'] = str(cols[0])
+            if 'y' not in f or not f.get('y'):
+                for c in cols[1:]:
+                    if pd.api.types.is_numeric_dtype(rdf[c]): f['y'] = str(c); break
+                if 'y' not in f: f['y'] = str(cols[1])
+        return f
+
+    def fix_and_retry(self, code, error, query, df, meta, audit):
+        nc = audit.get('product_name_cols', ['對方品名/品名備註'])
+        cc = audit.get('product_code_cols', ['產品代號'])
+        tc = audit.get('type_cols', ['單別名稱'])
+        name_col = nc[0] if nc else '對方品名/品名備註'
+        code_col = cc[0] if cc else '產品代號'
+        type_col = tc[0] if tc else '單別名稱'
+        qty_s = audit.get('qty_signed_col', '')
+        amt_s = audit.get('amount_signed_col', '')
+        amt_u = audit.get('amount_untaxed_col', '')
+
+        prompt = f"""程式碼失敗，修復它。
+原始: ```python\n{code}\n```
+錯誤: {error}
+問題: {query}
+
+修復規則:
+1. chart_config x,y,color 字串
+2. 年份用 _年份(整數)
+3. 品名搜 '{name_col}' + str.contains()
+4. 代號搜 '{code_col}'
+5. ❌ 不用 '{type_col}' 搜品名！它只有銷貨/銷退值
+6. 淨數量用 '{qty_s or "數量"}'（已含正負號或後端已轉負）
+7. 淨金額用 '{amt_s or amt_u or "未稅金額"}'
+8. ASP = 未稅淨額/淨數量，禁用含稅
+9. result_df = DataFrame + reset_index(drop=True)
+10. 查無資料回報說明文字
+
+返回完整 JSON。"""
+        try:
+            r = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role":"system","content":self._sysprompt(df,meta,audit,query)},
+                          {"role":"user","content":prompt}],
+                temperature=TEMPERATURE, response_format={"type":"json_object"}, max_tokens=4000)
+            return json.loads(r.choices[0].message.content)
+        except: return None
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  圖表生成器 v16.1 — 跨年份比較視覺修復                          ║
+# ╚══════════════════════════════════════════════════════════════╝
+class ChartGenerator:
+    @staticmethod
+    def create(data, chart_type, config, color_scheme=None):
+        if data is None or len(data) == 0: return None
+        x = safe_get_string(config.get('x'))
+        y = safe_get_string(config.get('y'))
+        color = safe_get_string(config.get('color'))
+        title = safe_get_string(config.get('title'), '數據分析圖表')
+
+        if not x or not y:
+            cols = list(data.columns)
+            if len(cols) >= 2:
+                if not x: x = str(cols[0])
+                if not y:
+                    for c in cols[1:]:
+                        if pd.api.types.is_numeric_dtype(data[c]): y = str(c); break
+                    if not y and len(cols) > 1: y = str(cols[1])
+        if not x or not y: return None
+        if x not in data.columns or y not in data.columns: return None
+        if color and color not in data.columns: color = ''
+
+        data = data.copy()
+        try:
+            if not pd.api.types.is_numeric_dtype(data[y]):
+                data[y] = pd.to_numeric(data[y], errors='coerce')
+        except: pass
         
-        **圖表切換**
-        - 「改成折線圖」
-        - 「只畫成長率」
-        - 「換成長條圖」
-        
-        **趨勢分析**
-        - 「做每月營收趨勢圖」
-        
-        **排名分析**
-        - 「TOP 10 產品銷售」
-        """)
+        # ⭐ v16.1 Visual Fix: 年份必須轉字串避免 Plotly 畫成漸層色
+        try:
+            if x in ['年份','_年份','year'] or '年' in str(x):
+                if pd.api.types.is_numeric_dtype(data[x]):
+                    data[x] = data[x].astype(int).astype(str)
+            # 重要：color 欄位若為年份，也必須轉字串！
+            if color and '年' in str(color) and pd.api.types.is_numeric_dtype(data[color]):
+                data[color] = data[color].astype(int).astype(str)
+        except: pass
 
-st.title("💬 直接問（中文語意理解｜上下文記憶｜穩定比較圖）")
+        colors = COLOR_PALETTE.get(color_scheme, COLOR_PALETTE['default'])
 
-if not st.session_state.dfs:
-    st.markdown("""
-    <div style="text-align: center; padding: 3rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 16px; margin: 2rem 0;">
-        <h2>👋 歡迎使用 AI 資料分析助理</h2>
-        <p style="opacity: 0.7;">請先在左側上傳 Excel 資料檔案，即可開始智能分析</p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+        # 圓餅圖自動合併小項
+        if chart_type in ('pie','donut') and len(data) > 10:
+            data = ChartGenerator._merge_small(data, x, y, 8)
 
-# Render history
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-        for name, df in (m.get("tables") or {}).items():
-            st.write(f"**{name}**")
-            st.dataframe(df, use_container_width=True)
-        if m.get("fig") is not None:
-            st.plotly_chart(m["fig"], use_container_width=True)
-
-prompt = st.chat_input("例：比較 2023 vs 2024 每月銷售數量（同月份對齊），然後幫我改成折線圖")
-
-if prompt:
-    # user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner("分析中..."):
-            dfs_all: Dict[str, pd.DataFrame] = st.session_state.dfs
-            profiles: Dict[str, TableProfile] = st.session_state.profiles
-
-            # 0) Detect follow-up viz intent
-            viz_intent = detect_viz_followup_intent(prompt)
-
-            # If user asks "改成圖表" and we have last_artifacts, do it WITHOUT calling LLM
-            if viz_intent is not None and st.session_state.last_artifacts.get("kind"):
-                kind = st.session_state.last_artifacts["kind"]
-                tables = st.session_state.last_artifacts["tables"]
-                meta = st.session_state.last_artifacts.get("meta") or {}
-
-                fig = None
-                final_answer = ""
-                result_tables = tables or {}
-
-                if kind == "yoy":
-                    # find yoy table
-                    yoy_df = None
-                    for kname, kdf in tables.items():
-                        if {"月份", "成長率(%)"}.issubset(set(kdf.columns)):
-                            yoy_df = kdf
-                            break
-                    if yoy_df is not None and meta:
-                        chart_type = viz_intent if viz_intent != "auto" else "bar"
-                        fig = plot_yoy(yoy_df, meta, chart_type=chart_type)
-                        final_answer = pretty_md({
-                            "title": "已依照你的要求更新圖表",
-                            "bullets": [
-                                f"圖表類型：{chart_type}",
-                                "沿用上一輪的資料與欄位（已保留同月份對齊）",
-                            ],
-                            "observations": [
-                                "這次不重新跑分析，只是把上一輪結果換成你指定的圖表呈現。",
-                            ],
-                            "suggestions": [
-                                "你也可以說：『只畫成長率』或『換成長條圖』。",
-                            ]
-                        })
-                    else:
-                        final_answer = pretty_md({
-                            "title": "目前沒有可直接轉圖的 YoY 結果",
-                            "bullets": ["我找不到上一輪的 YoY 表格欄位（月份/成長率）。"],
-                            "suggestions": ["你可以再問一次：『比較 2023 vs 2024 每月 XXX（同月份對齊）』我會重算並畫圖。"]
-                        })
-
-                elif kind == "trend":
-                    trend_df = None
-                    for kname, kdf in tables.items():
-                        if {"年月", "數值"}.issubset(set(kdf.columns)):
-                            trend_df = kdf
-                            break
-                    if trend_df is not None:
-                        fig = plot_trend(trend_df)
-                        final_answer = pretty_md({
-                            "title": "已把上一輪結果做成圖表",
-                            "bullets": ["圖表：月度趨勢折線圖", "沿用上一輪的數值欄位與期間"],
-                            "observations": ["這次只做視覺化，不重新計算。"],
-                        })
-                    else:
-                        final_answer = pretty_md({
-                            "title": "目前沒有可直接轉圖的趨勢結果",
-                            "bullets": ["找不到上一輪的『年月/數值』欄位。"],
-                            "suggestions": ["你可以直接問：『做成月度趨勢圖（用日期欄 XXX）』。"]
-                        })
-
-                elif kind == "topn":
-                    top_df = None
-                    for kname, kdf in tables.items():
-                        if {"項目", "數值"}.issubset(set(kdf.columns)):
-                            top_df = kdf
-                            break
-                    if top_df is not None:
-                        fig = plot_topn(top_df, len(top_df))
-                        final_answer = pretty_md({
-                            "title": "已把 TOPN 結果畫成圖表",
-                            "bullets": [f"圖表：TOP{len(top_df)} 水平長條圖", "沿用上一輪結果"],
-                        })
-                    else:
-                        final_answer = pretty_md({
-                            "title": "目前沒有可直接轉圖的 TOPN 結果",
-                            "bullets": ["找不到上一輪的『項目/數值』欄位。"],
-                        })
-
-                else:
-                    final_answer = pretty_md({
-                        "title": "我知道你要改成圖表，但上一輪結果類型不明",
-                        "bullets": ["我已保留上一輪表格輸出，你可以再說一次要畫哪個欄位/哪種圖。"],
-                    })
-
-                # render
-                st.markdown(final_answer)
-                for name, df in result_tables.items():
-                    st.write(f"**{name}**")
-                    st.dataframe(df, use_container_width=True)
-                if fig is not None:
-                    st.plotly_chart(fig, use_container_width=True)
-
-                # save history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": final_answer,
-                    "tables": result_tables,
-                    "fig": fig,
-                })
-
-                # update last artifacts fig
-                st.session_state.last_artifacts["fig"] = fig
-                st.stop()
-
-            # 1) Normal flow: choose candidate tables
-            selected_keys = pick_tables(prompt, profiles, TOPK_TABLES)
-            tables_json = tables_context_json(selected_keys, profiles)
-
-            # 2) Planner (with memory)
-            plan = llm_plan(
-                client=client,
-                question=prompt,
-                tables_json=tables_json,
-                model=DEFAULT_MODEL,
-                messages=st.session_state.messages,
-                last_state=st.session_state.analysis_state,
-            )
-
-            # 3) Determine table_key with fallback (and memory)
-            table_key = (plan.get("table_key") or "").strip()
-            if not table_key:
-                # if user follow-up but no table_key, use last state
-                table_key = st.session_state.analysis_state.get("table_key") or ""
-            if table_key not in dfs_all:
-                table_key = selected_keys[0] if selected_keys else ""
-
-            if not table_key or table_key not in dfs_all:
-                st.error("找不到可用的資料表，請確認已上傳正確的 Excel 檔案。")
-                st.stop()
-
-            df = dfs_all[table_key].copy()
-
-            # 4) Apply filters
-            filters = plan.get("filters") or []
-            df_f = apply_filters(df, filters)
-
-            # 5) Determine task_type
-            compare_intent = detect_compare_intent(prompt)
-            task_type = (plan.get("task_type") or "").strip() or "generic_summary"
-            if compare_intent:
-                task_type = "compare_yoy_monthly"
-
-            result_tables: Dict[str, pd.DataFrame] = {}
-            fig = None
-            meta_out: dict = {}
-            kind = ""
-            final_answer = ""
-
+        try:
+            fig = ChartGenerator._build(data, chart_type, x, y, color, title, colors)
+            if fig: ChartGenerator._style(fig, title, len(data), chart_type)
+            return fig
+        except:
             try:
-                if task_type == "compare_yoy_monthly":
-                    yoy_df, meta = build_yoy_table(df_f, prompt, plan)
-                    meta_out = meta
-                    result_tables["同月份對齊比較（YoY）"] = yoy_df
+                fig = px.bar(data, x=x, y=y, title=title, color_discrete_sequence=colors)
+                ChartGenerator._style(fig, title, len(data), 'bar')
+                return fig
+            except: return None
 
-                    # default chart type (bar)
-                    fig = plot_yoy(yoy_df, meta, chart_type="bar")
-                    kind = "yoy"
+    @staticmethod
+    def _merge_small(data, x, y, n=8):
+        data = data.sort_values(y, ascending=False, key=abs).reset_index(drop=True)
+        if len(data) <= n: return data
+        top = data.head(n).copy()
+        rest = pd.DataFrame({x: ['其他'], y: [data.iloc[n:][y].sum()]})
+        return pd.concat([top, rest], ignore_index=True)
 
-                    valid = yoy_df.dropna(subset=["成長率(%)"])
-                    if len(valid) > 0:
-                        max_row = valid.loc[valid["成長率(%)"].idxmax()]
-                        min_row = valid.loc[valid["成長率(%)"].idxmin()]
-                        bullets = [
-                            f"使用表：{table_key}",
-                            f"比較方式：**同月份對齊 01~12**（不把兩年接成時間軸）",
-                            f"指標欄位：{meta['metric_col']}（{meta['metric_kind']}）",
-                            f"最高成長月份：{max_row['月份']} 月（{max_row['成長率(%)']:.1f}%）",
-                            f"最低成長月份：{min_row['月份']} 月（{min_row['成長率(%)']:.1f}%）",
-                        ]
-                    else:
-                        bullets = [
-                            f"使用表：{table_key}",
-                            "比較方式：**同月份對齊 01~12**",
-                            f"指標欄位：{meta['metric_col']}（{meta['metric_kind']}）",
-                            "部分月份基準年為 0，成長率以 NaN 處理。",
-                        ]
+    @staticmethod
+    def _build(data, ct, x, y, color, title, colors):
+        kw = dict(title=title, color_discrete_sequence=colors)
+        ckw = {}
+        if color: ckw['color'] = color
+        fig = None
 
-                    final_answer = pretty_md({
-                        "title": "比較結果",
-                        "bullets": bullets,
-                        "observations": [
-                            f"圖表：{meta['y1']}/{meta['y2']} 以同月份並排方式呈現，右軸為成長率(%)。",
-                            "你可以直接接一句：『改成折線圖』或『只畫成長率』，我會沿用這份結果快速換圖。",
-                        ],
-                        "suggestions": [
-                            "如果你要同時比較『數量』與『金額』，請明確說：『再做一張金額的 YoY』，我會分開輸出兩張圖。",
-                            "如果你要看『差異最大的產品/業務/客戶』，你可以再補：『再列 TOP10 差異』。",
-                        ],
-                        "notes": [
-                            (f"規劃備註：{plan.get('notes','')}".strip() if plan.get("notes") else "規劃備註：（無）"),
-                        ],
-                    })
+        if ct == 'line':
+            fig = px.line(data, x=x, y=y, markers=True, **kw, **ckw)
+            fig.update_traces(line=dict(width=3), marker=dict(size=10))
+        elif ct in ('area','stacked_area'):
+            fig = px.area(data, x=x, y=y, **kw, **ckw)
+        elif ct in ('stacked_bar','stacked'):
+            fig = px.bar(data, x=x, y=y, barmode='stack', text=y, **kw, **ckw)
+            fig.update_traces(texttemplate='%{text:,.0f}', textposition='inside', textfont=dict(size=11, color='white'))
+        elif ct == 'grouped_bar':
+            fig = px.bar(data, x=x, y=y, barmode='group', text=y, **kw, **ckw)
+            fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside', textfont=dict(size=11))
+        elif ct == 'horizontal_bar':
+            fig = px.bar(data, x=y, y=x, orientation='h', text=y, **kw, **ckw)
+            fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside', textfont=dict(size=11))
+        elif ct == 'pie':
+            fig = px.pie(data, names=x, values=y, title=title, color_discrete_sequence=colors)
+            fig.update_traces(textposition='inside', textinfo='percent+label', textfont=dict(size=12))
+        elif ct == 'donut':
+            fig = px.pie(data, names=x, values=y, title=title, hole=0.45, color_discrete_sequence=colors)
+            fig.update_traces(textposition='inside', textinfo='percent+label', textfont=dict(size=12))
+        elif ct == 'scatter':
+            fig = px.scatter(data, x=x, y=y, **kw, **ckw)
+        elif ct == 'waterfall':
+            try:
+                fig = go.Figure(go.Waterfall(x=data[x].tolist(), y=data[y].tolist(),
+                    connector={"line":{"color":"rgb(63,63,63)"}}))
+                fig.update_layout(title=title)
+            except: fig = px.bar(data, x=x, y=y, **kw)
+        elif ct == 'funnel':
+            try: fig = px.funnel(data, x=y, y=x, **kw)
+            except: fig = px.bar(data, x=y, y=x, orientation='h', **kw)
+        elif ct == 'radar':
+            try:
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(r=data[y].tolist(), theta=data[x].tolist(),
+                    fill='toself', name=y, line_color=colors[0]))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True)), title=title)
+            except: fig = px.bar(data, x=x, y=y, **kw)
+        elif ct == 'heatmap':
+            try:
+                if color:
+                    pv = data.pivot_table(values=y, index=x, columns=color, aggfunc='sum')
+                    fig = px.imshow(pv, title=title, color_continuous_scale='RdYlBu_r')
+                else: fig = px.bar(data, x=x, y=y, **kw)
+            except: fig = px.bar(data, x=x, y=y, **kw)
+        elif ct == 'treemap':
+            try: fig = px.treemap(data, path=[x], values=y, **kw)
+            except: fig = px.bar(data, x=x, y=y, **kw)
+        elif ct == 'sunburst':
+            try: fig = px.sunburst(data, path=[color, x] if color else [x], values=y, **kw)
+            except: fig = px.pie(data, names=x, values=y, title=title, color_discrete_sequence=colors)
+        else:  # default bar
+            bkw = dict(text=y)
+            if color: bkw['color'] = color; bkw['barmode'] = 'group'
+            fig = px.bar(data, x=x, y=y, **kw, **bkw)
+            fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside', textfont=dict(size=12))
+        return fig
 
-                elif task_type == "trend_monthly":
-                    trend_df, meta = build_trend_monthly(df_f, prompt, plan)
-                    meta_out = meta
-                    result_tables["月度趨勢"] = trend_df
-                    fig = plot_trend(trend_df)
-                    kind = "trend"
+    @staticmethod
+    def _style(fig, title, n, ct='bar'):
+        circ = ct in ('pie','donut','radar','treemap','sunburst')
+        fig.update_layout(
+            title=dict(text=title, font=dict(size=20, family='Microsoft JhengHei', color='#1a1a2e'),
+                       x=0.5, xanchor='center', y=0.98, yanchor='top'),
+            font=dict(size=13, family='Microsoft JhengHei', color='#2d3436'),
+            height=580, hovermode='closest' if circ else 'x unified',
+            plot_bgcolor='rgba(250,250,252,1)', paper_bgcolor='white',
+            margin=dict(t=80, b=100, l=80, r=60),
+        )
+        if circ:
+            fig.update_layout(
+                legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5,
+                            font=dict(size=11), bgcolor='rgba(255,255,255,0.8)'),
+                margin=dict(t=80, b=160, l=40, r=40),
+            )
+        else:
+            fig.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5,
+                            font=dict(size=12), bgcolor='rgba(255,255,255,0.8)'),
+                yaxis=dict(tickformat=',', gridcolor='rgba(128,128,128,0.2)'),
+                xaxis=dict(tickangle=-45 if n > 8 else 0, gridcolor='rgba(128,128,128,0.2)', type='category'),
+            )
+            # y軸留白讓 text 不被裁切
+            if ct in ('bar','grouped_bar'):
+                try:
+                    vals = [v for trace in fig.data for v in (trace.y if hasattr(trace,'y') and trace.y is not None else []) if v is not None]
+                    if vals: fig.update_yaxes(range=[min(0, min(vals)*1.1), max(vals)*1.25])
+                except: pass
 
-                    final_answer = pretty_md({
-                        "title": "月度趨勢",
-                        "bullets": [
-                            f"使用表：{table_key}",
-                            f"指標欄位：{meta['metric_col']}（{meta['metric_kind']}）",
-                            (f"期間：{trend_df['年月'].min()} ~ {trend_df['年月'].max()}" if len(trend_df) else "期間：未知"),
-                        ],
-                        "observations": [
-                            "折線圖用年月做 x 軸，數值做 y 軸。",
-                        ],
-                        "suggestions": [
-                            "如果你想要『只看銷貨/進貨』，請告訴我哪個欄位是『單別名稱』或分類欄位，我會加上篩選。",
-                            "你也可以直接說：『把剛剛那張表改成圖表』。",
-                        ],
-                    })
 
-                elif task_type == "topn":
-                    top_df, meta = build_topn(df_f, prompt, plan)
-                    meta_out = meta
-                    topn = meta.get("topn", TOPN_DEFAULT)
-                    result_tables[f"TOP{topn}"] = top_df
-                    fig = plot_topn(top_df, topn)
-                    kind = "topn"
-
-                    final_answer = pretty_md({
-                        "title": f"TOP{topn} 排名",
-                        "bullets": [
-                            f"使用表：{table_key}",
-                            f"維度：{meta['dim_col']}",
-                            f"指標欄位：{meta['metric_col']}（{meta['metric_kind']}）",
-                        ],
-                        "observations": [
-                            "表格已依照數值由大到小排序。",
-                            "圖表使用水平長條圖，最高值在上方。",
-                        ],
-                        "suggestions": [
-                            "如果你要『2023 vs 2024 的 TOP 差異』，請回：『比較兩年同一批項目差異』。",
-                            "你也可以說：『換成別的維度』或『改看金額』。",
-                        ],
-                    })
-
+# ============================================================================
+# 🖥️ Streamlit 主程式
+# ============================================================================
+def show_login_page():
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔐 系統登入</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">企業級 AI 智能數據分析平台 v16.1</p>', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.markdown("---")
+        # 使用 form 讓密碼欄位支援 Enter 鍵登入
+        with st.form(key="login_form", clear_on_submit=False):
+            pwd = st.text_input("請輸入密碼", type="password", key="login_password")
+            submitted = st.form_submit_button("🚀 登入", type="primary", use_container_width=True)
+            
+            if submitted:
+                if pwd == PASSWORD:
+                    st.session_state.authenticated = True
+                    st.rerun()
                 else:
-                    # generic summary
-                    summary_df, meta = build_generic_summary(df_f, prompt, plan)
-                    meta_out = meta
-                    result_tables["資料摘要"] = summary_df
-                    result_tables["資料預覽"] = df_safe_preview(df_f, 30)
-                    kind = "preview"
+                    st.error("❌ 密碼錯誤")
 
-                    final_answer = pretty_md({
-                        "title": "資料摘要",
-                        "bullets": [
-                            f"使用表：{table_key}",
-                            f"總筆數：{len(df_f):,}",
-                            f"欄位數：{len(df_f.columns)}",
-                        ],
-                        "observations": [
-                            "由於未偵測到明確的分析意圖，先提供基本摘要。",
-                        ],
-                        "suggestions": [
-                            "你可以試著說：『比較 2023 vs 2024 每月銷售數量』",
-                            "或是：『做 TOP 10 產品排名』、『畫每月趨勢圖』",
-                        ],
-                    })
 
-            except Exception as e:
-                final_answer = pretty_md({
-                    "title": "分析過程發生錯誤",
-                    "bullets": [f"錯誤訊息：{str(e)[:200]}"],
-                    "suggestions": [
-                        "請確認資料欄位是否正確。",
-                        "你可以重新描述需求，或指定具體的欄位名稱。",
-                    ],
-                })
-                result_tables["資料預覽"] = df_safe_preview(df_f, 20)
-                kind = "preview"
+def show_main_app():
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    # 初始化 session state（API key 使用內建值）
+    defs = dict(df=None, metadata=None, history=[], ai_engine=None,
+                debug_mode=False, cleaning_stats={}, cleaning_log=[], semantic_audit=None,
+                available_sheets={}, selected_sheets={})
+    for k, v in defs.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-            # Render results
-            st.markdown(final_answer)
-            for name, df_out in result_tables.items():
-                st.write(f"**{name}**")
-                st.dataframe(df_out, use_container_width=True)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
+    # 自動初始化 AI 引擎（使用內建 API Key）
+    if st.session_state.ai_engine is None:
+        st.session_state.ai_engine = LogicalBrainEngine(EMBEDDED_API_KEY)
 
-            # Save to history
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": final_answer,
-                "tables": result_tables,
-                "fig": fig,
-            })
+    st.markdown('<h1 class="main-header">🤖 AI 智能數據分析師</h1>', unsafe_allow_html=True)
 
-            # Update analysis state (memory)
-            st.session_state.analysis_state = {
-                "table_key": table_key,
-                "task_type": task_type,
-                "years": plan.get("years") or [],
-                "metric_col": meta_out.get("metric_col", ""),
-                "metric_kind": meta_out.get("metric_kind", ""),
-                "filters": filters,
-                "dim_col": meta_out.get("dim_col", ""),
-                "last_table_name": table_key,
-                "last_result_table_name": list(result_tables.keys())[0] if result_tables else "",
-            }
+    # ── 側邊欄（已移除 API Key 輸入）──
+    with st.sidebar:
+        st.header("⚙️ 系統設定")
+        st.session_state.debug_mode = st.checkbox("🐛 除錯模式", value=st.session_state.debug_mode)
 
-            # Update last artifacts for follow-up
-            st.session_state.last_artifacts = {
-                "tables": result_tables,
-                "fig": fig,
-                "meta": meta_out,
-                "kind": kind,
-            }
+        st.divider()
+        st.header("📁 上傳資料")
+        files = st.file_uploader("選擇 Excel 檔案", type=['xlsx','xls'], accept_multiple_files=True)
+
+        # ── 工作表選擇器（修復版）──
+        if files:
+            st.markdown("### 📋 工作表選擇")
+            temp_avail = {}
+            for f in files:
+                try:
+                    fb = f.read(); f.seek(0)
+                    xls = pd.ExcelFile(io.BytesIO(fb))
+                    valid = [s for s in xls.sheet_names if not any(k in s.lower() for k in DataCleaningEngine.SKIP_SHEET_KW)]
+                    temp_avail[f.name] = valid if valid else xls.sheet_names
+                except: continue
+            st.session_state.available_sheets = temp_avail
+
+            if temp_avail:
+                show_sel = st.checkbox("🔍 手動選擇工作表", value=False,
+                    help="預設載入所有工作表（智慧路由會自動丟棄總表）")
+
+                if show_sel:
+                    for fname, sheets in temp_avail.items():
+                        st.markdown(f"**📄 {fname}**")
+                        # 用獨立 session_state key 管理每個檔案的選擇
+                        sk = f"_sheetsel_{fname}"
+                        if sk not in st.session_state:
+                            st.session_state[sk] = sheets.copy()
+
+                        selected = st.multiselect("選擇工作表", options=sheets,
+                            default=st.session_state[sk], key=f"ms_{fname}", label_visibility="collapsed")
+                        st.session_state[sk] = selected
+                        st.session_state.selected_sheets[fname] = selected
+                        st.caption(f"已選 {len(selected)}/{len(sheets)}")
+                        st.markdown("---")
+                else:
+                    st.session_state.selected_sheets = {}
+                    total = sum(len(s) for s in temp_avail.values())
+                    st.info(f"💡 預設全部載入 ({total} 個工作表)，智慧路由自動處理總表")
+
+        # 載入按鈕
+        if files:
+            if st.button("🚀 載入並清洗資料", type="primary", use_container_width=True, key="sidebar_load_data"):
+                with st.spinner("🔄 三大引擎啟動中..."):
+                    try:
+                        sel = st.session_state.selected_sheets if st.session_state.selected_sheets else None
+                        cleaner = DataCleaningEngine()
+                        df, meta, stats = cleaner.clean(files, sel)
+                        if df is not None and len(df) > 0:
+                            st.session_state.df = df
+                            st.session_state.metadata = meta
+                            st.session_state.cleaning_stats = stats
+                            st.session_state.cleaning_log = cleaner.log
+                            st.session_state.history = []
+                            detector = SemanticDetectionModule()
+                            st.session_state.semantic_audit = detector.audit(df, meta)
+                            st.success(f"✅ 載入 {len(df):,} 筆（銷退已轉負，總表已過濾）")
+                        else:
+                            st.error("❌ 無有效資料")
+                    except Exception as e:
+                        st.error(f"❌ 載入失敗: {e}")
+
+        # 引擎狀態
+        if st.session_state.df is not None:
+            stats = st.session_state.cleaning_stats
+            st.divider()
+            st.markdown("### 🏗️ 引擎狀態")
+            st.markdown(f"""<div class="engine-report">
+<b>🧹 數據清洗引擎</b><br>
+檔案: {stats.get('total_files',0)} | 工作表: {stats.get('total_sheets_read',0)} |
+丟棄總表: {stats.get('sheets_skipped_summary',0)}<br>
+去重: {stats.get('dedup_strategy','-')} | 移除: {stats.get('duplicates_removed',0):,}<br>
+<b>🔄 銷退轉負: {stats.get('return_rows_negated',0):,} 筆</b> (欄位: {stats.get('return_type_col','-')})<br>
+數值: {stats.get('numeric_cols_standardized',0)} 欄 | 日期: {stats.get('date_cols_processed',0)} 欄
+</div>""", unsafe_allow_html=True)
+
+            audit = st.session_state.semantic_audit
+            if audit:
+                st.markdown(f"""<div class="engine-report">
+<b>🎯 語意感知</b><br>{audit.get('summary_text','').replace(chr(10), '<br>')}
+</div>""", unsafe_allow_html=True)
+
+            with st.expander("📋 清洗日誌", expanded=False):
+                for l in st.session_state.cleaning_log:
+                    st.markdown(f"- {l}")
+
+            st.divider()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🗑️ 清除資料", key="sidebar_clear_data"):
+                    for k in ['df','metadata','history','cleaning_stats','cleaning_log','semantic_audit']:
+                        st.session_state[k] = defs.get(k)
+                    st.rerun()
+            with c2:
+                if st.button("🔄 清除對話", key="sidebar_clear_history"):
+                    st.session_state.history = []
+                    st.rerun()
+
+            with st.expander("👀 資料預覽"):
+                pcols = [c for c in st.session_state.df.columns if not str(c).startswith('_')]
+                st.dataframe(st.session_state.df[pcols].head(10), use_container_width=True)
+
+    # ══════════════════════════════════════════════
+    # 主畫面
+    # ══════════════════════════════════════════════
+    if st.session_state.df is None:
+        st.info("👈 請先在左側上傳 Excel 檔案")
+        return
+
+    df = st.session_state.df
+    meta = st.session_state.metadata
+    audit = st.session_state.semantic_audit or {}
+    ai = st.session_state.ai_engine
+    debug = st.session_state.debug_mode
+
+    # 顯示歷史
+    for i, item in enumerate(st.session_state.history):
+        with st.chat_message("user"):
+            st.write(item.get('query', ''))
+        with st.chat_message("assistant"):
+            if item.get('answer'): st.markdown(item['answer'])
+            if item.get('thinking'):
+                with st.expander("🧠 分析思路", expanded=False):
+                    st.markdown(f'<div class="thinking-box">{item["thinking"]}</div>', unsafe_allow_html=True)
+            rdf = item.get('result_df')
+            if item.get('need_chart') and rdf is not None and len(rdf) > 0:
+                try:
+                    fig = ChartGenerator.create(rdf, item.get('chart_type','bar'),
+                        item.get('chart_config',{}), item.get('chart_color',''))
+                    if fig: st.plotly_chart(fig, use_container_width=True, key=f"h_{i}_{hash(str(item.get('query','')))}")
+                except: pass
+            if rdf is not None and len(rdf) > 0:
+                st.markdown(f'<div class="data-header">📋 查詢結果 ({len(rdf):,} 筆)</div>', unsafe_allow_html=True)
+                ddf = rdf.copy(); ddf.index = range(1, len(ddf)+1)
+                for col in ddf.columns:
+                    try:
+                        if pd.api.types.is_numeric_dtype(ddf[col]): ddf[col] = ddf[col].apply(format_number)
+                    except: pass
+                st.dataframe(ddf, use_container_width=True, height=min(400, len(ddf)*35+50))
+            if debug and item.get('code'):
+                with st.expander("💻 程式碼"): st.code(item['code'], language='python')
+
+    # 輸入
+    query = st.chat_input("請輸入問題...")
+    if query:
+        with st.chat_message("user"):
+            st.write(query)
+        with st.chat_message("assistant"):
+            with st.spinner("🧠 AI 分析中..."):
+                ai_result = ai.analyze(query, df, meta, audit, st.session_state.history)
+                answer = ai_result.get('answer', '')
+                thinking = ai_result.get('thinking', '')
+                need_chart = ai_result.get('need_chart', False)
+                chart_type = ai_result.get('chart_type', 'bar')
+                chart_color = ai_result.get('chart_color', '')
+                code = ai_result.get('code', '')
+                result_df = None
+                chart_config = {}
+
+                if code:
+                    success, result_df, chart_config, error = ai.execute_code(code, df)
+                    if not success:
+                        for retry in range(MAX_RETRIES):
+                            if debug: st.warning(f"⚠️ 第 {retry+1} 次修復...")
+                            fixed = ai.fix_and_retry(code, error, query, df, meta, audit)
+                            if fixed and fixed.get('code'):
+                                success, result_df, chart_config, nerr = ai.execute_code(fixed['code'], df)
+                                if success:
+                                    code = fixed['code']
+                                    answer = fixed.get('answer', answer)
+                                    thinking = fixed.get('thinking', thinking)
+                                    if debug: st.success("✅ 修復成功!")
+                                    break
+                                error = nerr
+                        if not success and debug: st.error(f"❌ 失敗: {error}")
+
+                st.session_state.history.append(dict(
+                    query=query, answer=answer, thinking=thinking,
+                    need_chart=need_chart, chart_type=chart_type, chart_color=chart_color,
+                    code=code, result_df=result_df, chart_config=chart_config))
+
+            if answer: st.markdown(answer)
+            if thinking:
+                with st.expander("🧠 分析思路", expanded=False):
+                    st.markdown(f'<div class="thinking-box">{thinking}</div>', unsafe_allow_html=True)
+            if need_chart and result_df is not None and len(result_df) > 0:
+                try:
+                    fig = ChartGenerator.create(result_df, chart_type, chart_config, chart_color)
+                    if fig: st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    if debug: st.error(f"圖表錯誤: {e}")
+            if result_df is not None and len(result_df) > 0:
+                st.markdown(f'<div class="data-header">📋 查詢結果 ({len(result_df):,} 筆)</div>', unsafe_allow_html=True)
+                ddf = result_df.copy(); ddf.index = range(1, len(ddf)+1)
+                for col in ddf.columns:
+                    try:
+                        if pd.api.types.is_numeric_dtype(ddf[col]): ddf[col] = ddf[col].apply(format_number)
+                    except: pass
+                st.dataframe(ddf, use_container_width=True, height=min(450, len(ddf)*35+50))
+            elif code and (result_df is None or len(result_df) == 0):
+                st.warning("⚠️ 查詢沒有結果，請檢查條件")
+            if debug and code:
+                with st.expander("💻 程式碼"): st.code(code, language='python')
+                if chart_config:
+                    with st.expander("📊 chart_config"): st.json(chart_config)
+
+
+def main():
+    st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide", initial_sidebar_state="expanded")
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        show_login_page()
+    else:
+        show_main_app()
+
+if __name__ == "__main__":
+    main()

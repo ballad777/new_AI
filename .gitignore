@@ -1,7 +1,51 @@
+# ==================================================
+# Git Ignore - AI 數據分析助手 Pro
+# ==================================================
+
+# Streamlit secrets (重要！不要上傳 API Key)
+.streamlit/secrets.toml
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
 .venv/
-.env
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# 暫存檔案
+*.tmp
+*.temp
+chart.html
+chart.png
+figure.html
+figure.png
+
+# 上傳的檔案（如果存在本地）
+uploads/
 *.xlsx
-*.csv
+*.xls
+
+# 公司資料 & 不需要的資料夾
+data/
+-p/
+modules/
+app_modular.py
+
+# Logs
+*.log
+logs/
